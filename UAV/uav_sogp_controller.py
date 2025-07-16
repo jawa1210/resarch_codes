@@ -68,77 +68,124 @@ class SparseOnlineGP:
         self.C = np.array([[-1.0/denom]])
         self.Q = np.array([[1.0/k00]])
 
-    def predict(self, x: np.ndarray) -> Tuple[float, float, np.ndarray, np.ndarray]:
-        k_vec = np.array([self.kernel(xi, x) for xi in self.X])  # k_star
+    def predict(self, x: np.ndarray) -> Tuple[float,float]:
+        """
+        SOGP の予測(mean, variance) を返す。
+        """
+        k_vec = np.array([self.kernel(xi, x) for xi in self.X])  # (N,)
         mean = float(self.a.dot(k_vec))
         var = self.kernel(x, x) + float(k_vec.dot(self.C.dot(k_vec)))
-        return mean, var, k_vec, self.C
+        return mean, var
 
     def update(self, x: np.ndarray, y: float):
-        """
-        新しい観測 (x,y) をオンライン更新。
-        """
-        # 最初のデータなら初期化だけ
+        # 1) 初回追加
         if self.X.shape[0] == 0:
-            self.init_first(x, y)
-            return
+            return self.init_first(x, y)
 
-        # 既存の basis size
+        # 2) 既存基底数
         N = self.X.shape[0]
 
-        # 1) 事前予測
+        # 3) 事前予測 f_*, var_*
         k_vec = np.array([self.kernel(xi, x) for xi in self.X])  # (N,)
-        k_tt = self.kernel(x, x)
-        f_star = float(self.a.dot(k_vec))
+        k_tt  = self.kernel(x, x)
+        f_star   = float(self.a.dot(k_vec))
         var_star = float(k_tt + k_vec.dot(self.C.dot(k_vec)))
 
-        # 2) likelihood の 1st/2nd 微分 → q_t, r_t
+        # 4) q_t, r_t の計算 (Eq.2.20,2.21)
         denom = var_star + self.sigma0**2
-        q = (y - f_star) / denom
-        r = 1.0 / denom
+        q_t = (y - f_star) / denom
+        r_t = -1.0 / denom
 
-        # 3) st ベクトルを作る (N+1,)
-        c_k = self.C.dot(k_vec)            # (N,)
-        st = np.concatenate([c_k, [1.0]])  # (N+1,)
+        # 5) ノベリティ h_t の計算 (Eq.2.22)
+        h_t = k_tt - k_vec.dot(self.Q.dot(k_vec))
 
-        # 4) a, C を拡張＋更新
-        a_ext = np.concatenate([self.a, [0.0]])                # (N+1,)
-        C_ext = np.pad(self.C, ((0,1),(0,1)), mode='constant') # (N+1,N+1)
+        # 6) s_t の構築 (長さ N+1)
+        #    - 既存Cに対する寄与を下に0を足して伸長
+        s_base = self.C.dot(k_vec)                  # (N,)
+        s_t     = np.concatenate([s_base, [0.0]])   # (N+1,) のうち下端は0
+        e_t     = np.zeros(N+1); e_t[-1] = 1.0      # 単位ベクトル
+        s_t    += e_t                               # Eq.2.17 の s_t
 
-        self.a = a_ext + q * st
-        self.C = C_ext + r * np.outer(st, st)
+        # 7) ブランチ：新基底追加 or 既存更新
+        if h_t > self.omega:
+            # —— 新基底を追加する場合 ——
+            # a_t と C_t の Ut/Tt 拡張＋更新 (Eq.2.17)
+            self.a = np.r_[self.a, 0.0] + q_t * s_t
+            C_ext     = np.pad(self.C, ((0,1),(0,1)), mode='constant')
+            self.C   = C_ext        + r_t * np.outer(s_t, s_t)
 
-        # 5) basis データ列を拡張
-        self.X = np.vstack([self.X, x.reshape(1,2)])
+            # Q_t の Ut 更新 + rank-1 update (Eq.2.23)
+            ehat      = self.Q.dot(k_vec)           # (N,)
+            ehat_full = np.concatenate([ehat, [0.0]])
+            Q_ext     = np.pad(self.Q, ((0,1),(0,1)), mode='constant')
+            self.Q    = Q_ext + (1.0/h_t) * np.outer(ehat_full - e_t,
+                                                    ehat_full - e_t)
 
-        # 6) Q_t の更新（次の novelty 評価に使う）
-        #    Qt = Ut(Qt-1) + (1/h_t)(T(et~ - et) (T(et~ - et))^T)
-        #    ここでは簡略化して毎回逆行列を保持
-        K = np.zeros((N+1, N+1))
-        for i in range(N+1):
-            for j in range(N+1):
-                K[i,j] = self.kernel(self.X[i], self.X[j])
-        self.Q = np.linalg.pinv(K)
+            # 新基底を X に追加
+            self.X = np.vstack([self.X, x.reshape(1,2)])
 
+        else:
+            # —— 既存基底だけで更新する場合 ——
+            # Eq.2.24 相当
+            # s_t[:-1] が既存基底への寄与分
+            s_short = s_t[:-1]
+            self.a = self.a + q_t * s_short
+            self.C = self.C + r_t * np.outer(s_short, s_short)
+            # Q は変えない
 
-        # 7) sparsify (max_basis 制限)
-        if self.max_basis is not None and self.X.shape[0] > self.max_basis:
-            self._sparsify()
+        # 8) 基底数超過時の Prune (Eq.2.25–2.26)
+        # 基底追加 or 既存更新 が済んだあと
+        if self.max_basis is not None and len(self.X) > self.max_basis:
+            self._prune_basis()
 
-    def _sparsify(self):
+    def _prune_basis(self):
         """
-        χ_i 基準で最も貢献の小さい basis を削除
+        max_basis 超過時に φ_i = |a_i|/Q_{ii} が最小の基底 i を削除し、
+        論文 Eq.(2.26) のリダクション更新を行う。
         """
-        # χ_i = |a_i| / Q_{ii}
-        chi = np.abs(self.a) / np.diag(self.Q)
-        j = np.argmin(chi)  # 削除対象
-        # j 行 j 列を落とす
-        mask = np.ones(self.X.shape[0], dtype=bool)
-        mask[j] = False
-        self.X = self.X[mask]
-        self.a = self.a[mask]
-        self.C = self.C[np.ix_(mask,mask)]
-        self.Q = self.Q[np.ix_(mask,mask)]
+        N = len(self.X)
+        # φ_i = |a_i| / Q_{ii}
+        phi = np.abs(self.a) / np.diag(self.Q)
+        j = np.argmin(phi)  # 削除対象のインデックス
+
+        # 中間パラメータをコピー
+        a_mid = self.a.copy()
+        C_mid = self.C.copy()
+        Q_mid = self.Q.copy()
+
+        # j 番目の値を取り出す
+        a_j = a_mid[j]            # a^{(t+1)}_j
+        Q_j = Q_mid[:, j].reshape(-1,1)   # Q^j (列ベクトル)
+        q_jj = Q_mid[j, j]        # q^j
+
+        # 1) a の更新
+        #   a_hat = a_mid - a_j * (Q^j / q^j)
+        a_new = a_mid - (a_j / q_jj) * Q_j.flatten()
+
+        # 2) C の更新
+        #   c^j は C_mid の j 列から j 行を除いたもの
+        idx = [i for i in range(N) if i != j]
+        Cj = C_mid[:, j]          # 全行の j 列
+        cj = Cj[idx]              # 削除後の c^j (長さ N-1)
+        Qj = Q_j[idx,:]           # Q^j のうち削除後の行 (形: (N-1,1))
+
+        # 部分的な rank-1 更新項
+        term1 = (cj[:,None] @ Qj.T) / (q_jj**2)   # c^j Q^j^T / (q^j)^2
+        term2 = (Qj @ C_mid[j: j+1, :][:, idx]) / q_jj  # Q^j C^j^T / q^j とその転置
+        term3 = (C_mid[idx, j:j+1] @ Qj.T) / q_jj       # C^j Q^j^T / q^j
+
+        C_new = C_mid[np.ix_(idx, idx)] + term1 - (term2 + term3)
+
+        # 3) Q の更新
+        Q_new = Q_mid[np.ix_(idx, idx)] - (Qj @ Qj.T) / q_jj
+
+        # 4) 基底 X, a, C, Q を置き換える
+        self.X = self.X[idx]
+        self.a = a_new[idx]
+        self.C = C_new
+        self.Q = Q_new
+
+# ──────────────────────────────────────────────────────────────────────────
 
 
 def environment_function(pos, true_map, noise_std=0.1):
