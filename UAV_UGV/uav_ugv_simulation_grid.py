@@ -3,177 +3,295 @@ import numpy as np
 from typing import Callable, Tuple, List
 import matplotlib.pyplot as plt
 from qpsolvers import solve_qp
+import pandas as pd
+import matplotlib.patches as patches
 
 # ─── CBF QP Solver ─────────────────────────────────────────────
+
+
 class solver():
     def __init__(self):
         self.alpha = 1.0
         self.cbf = None
         self.slack = 0.0
+        self.cbf_list=[]
+        self.slack_list=[]
+        self.P_co=1
 
     def add_cbf(self, bJ: float, dbJ_du_x: float, dbJ_du_y: float, slack: float = 0.0):
-        self.cbf = np.array([bJ, dbJ_du_x, dbJ_du_y])
-        self.slack = slack
+        self.cbf_list.append(np.array([bJ, dbJ_du_x, dbJ_du_y]))
+        self.slack_list.append(slack)
 
-    def solve_qp(self,nominal=None):
-        if self.cbf is not None:
-            bJ, gx, gy = self.cbf
-            G = np.array([[-gx, -gy, self.slack]])
-            h = np.array([ bJ ])
+    def add_cbfs(self, cbfs: List[Tuple[float, float, float]]):
+        for cbf in cbfs:
+            cbf_bJ= cbf[0]
+            cbf_grad_x = cbf[1]
+            cbf_grad_y = cbf[2]
+            slack= cbf[3]
+            self.add_cbf(cbf_bJ, cbf_grad_x, cbf_grad_y, slack)
+
+    def solve(self, nominal: np.ndarray = None) -> np.ndarray:
+        # 1) nominal input
+        if nominal is None:
+            nominal_input = np.zeros(2)
         else:
-            G = np.zeros((1,3))
-            h = np.zeros((1,1))
+            nominal_input = nominal
 
-        if nominal is not None:
-            self.nominal = nominal
-            q=np.array([-2*self.nominal[0],-2*self.nominal[1],0])
-        else:
-            q = np.zeros(3)
-        
-        P = 2*np.eye(3)
+        # 2) slack の数
+        m = len(self.cbf_list)
+        dim = 2 + m
 
+        # 3) G, h の構築
+        G = np.zeros((m, dim))
+        h = np.zeros((m, 1))
+        for i, ((bJ, gx, gy), slack_coef) in enumerate(zip(self.cbf_list, self.slack_list)):
+            G[i, 0]      = -gx
+            G[i, 1]      = -gy
+            G[i, 2 + i]  =  slack_coef   # スラック変数 s_i の係数
+            h[i, 0]      =  bJ
+
+        P = np.zeros((dim, dim))
+        P[0,0] = 2*self.P_co
+        P[1,1] = 2*self.P_co
+        for i in range(m):
+            P[2+i, 2+i] = 2*1 #self.gad_co
+
+        q = np.zeros(dim)
+        q[0:2] = -2 * nominal_input
+
+        # 5) QP を解く
         sol = solve_qp(P, q, G, h, solver="cvxopt")
         if sol is None:
-            print("QP solver failed to find a solution.")
-            return np.zeros(2)
-        else:
-            return sol[:2]
+            # 解が見つからなければ nominal
+            print(f"ノミナルです")
+            return nominal_input.copy()
+        # 6) 先頭2要素(ν_x,ν_y) を返す
+        return sol[:2]
 
-# ─── Sparse Online Gaussian Process (SOGP) ────────────────────
-def rbf_kernel(x, y, sigma=3.0):
+
+# ─── Sparse Online Gaussian Process (論文準拠実装) ─────────────
+
+
+def rbf_kernel(x, y, sigma=2.0):
     return np.exp(-np.linalg.norm(x-y)**2/(2*sigma**2))
 
+
 class SparseOnlineGP:
-    def __init__(self, sigma0: float, kernel=rbf_kernel, max_basis: int=None, delta: float=1e-4):
-        self.sigma0 = sigma0         # 観測ノイズ分散の逆数の √1/… に相当
+    def __init__(self, sigma0: float, kernel=rbf_kernel, max_basis: int = None, delta: float = 0.1):
+        self.sigma0 = sigma0         # 観測ノイズ分散
         self.kernel = kernel
-        self.max_basis = max_basis   # 基底の最大数
-        self.delta = delta           # 新サンプル追加のノベリティ閾値
+        self.max_basis = max_basis      # 基底の最大数
+        self.delta = delta          # ノベリティ閾値 ω
         # 初期化：データなし
-        self.X = np.zeros((0,2))     # basis inputs
-        self.a = np.zeros((0,))      # coefficients a_t
-        self.C = np.zeros((0,0))     # C_t 行列
-        self.Q = np.zeros((0,0))     # Gram の逆 Q_t
+        self.X = np.zeros((0, 2))
+        self.a = np.zeros((0,))
+        self.C = np.zeros((0, 0))
+        self.Q = np.zeros((0, 0))
 
     def init_first(self, x, y):
-        # t=1 のとき
-        k00 = self.kernel(x,x)
+        k00 = self.kernel(x, x)
         denom = k00 + self.sigma0**2
-        self.X = x.reshape(1,2)
+        self.X = x.reshape(1, 2)
         self.a = np.array([y/denom])
         self.C = np.array([[-1.0/denom]])
         self.Q = np.array([[1.0/k00]])
 
     def update(self, x: np.ndarray, y: float):
-        """
-        新しい観測 (x,y) をオンラインで追加 or 更新
-        """
-        if self.X.shape[0]==0:
-            return self.init_first(x,y)
-
-        #―― 1) 事前予測 f*, var_*――
-        k_vec = np.array([self.kernel(xi,x) for xi in self.X])  # (N,)
-        k_tt  = self.kernel(x,x)
+        # ―― 1) 事前予測 f*, var_* ――
+        k_vec = np.array([self.kernel(xi, x) for xi in self.X])  # (N,)
+        k_tt = self.kernel(x, x)
         f_star = float(self.a.dot(k_vec))
         var_star = float(k_tt + k_vec.dot(self.C.dot(k_vec)))
 
-        #―― 2) q_t, r_t の計算――
+        # ―― 2) q_t, r_t の計算 (Eq.2.20–2.21) ――
         denom = var_star + self.sigma0**2
         q_t = (y - f_star) / denom
-        r_t = 1.0 / denom
+        r_t = -1.0 / denom
 
-        #―― 3) ノベリティ h_t の計算―― (Eq 2.22)
+        # ―― 3) ノベリティ h_t の計算 (Eq.2.22) ――
         h_t = k_tt - k_vec.dot(self.Q.dot(k_vec))
 
-        #―― 4) st ベクトル――
-        c_k = self.C.dot(k_vec)             # (N,)
-        s_t = np.concatenate([c_k, [1.0]])  # (N+1,)
-
-        #―― 5) 基底追加 or 既存更新――
-        if h_t > self.delta:
-            # ---- (a) 新基底として追加 ----
-            N = self.X.shape[0]
-            # a, C を Ut, Tt で拡張
-            a_ext = np.concatenate([self.a, [0.0]])               # (N+1,)
-            C_ext = np.pad(self.C, ((0,1),(0,1)), mode='constant')  # (N+1,N+1)
-            # 再帰更新 (Eq 2.17)
+        n = self.X.shape[0]
+        # --- 【ケース１】基底数に余裕あり → 常に拡張 branch (2.17) ---
+        if self.max_basis is None or n < self.max_basis:
+            # 2.17 の a,C,Q 拡張更新
+            s_t = np.concatenate([self.C.dot(k_vec), [1.0]])
+            # a, C の拡張
+            a_ext = np.concatenate([self.a, [0.0]])
+            C_ext = np.pad(self.C, ((0, 1), (0, 1)), 'constant')
             self.a = a_ext + q_t * s_t
             self.C = C_ext + r_t * np.outer(s_t, s_t)
-
-            # Q も再帰更新 (Eq 2.23)
-            #   Ut(Q) + (1/h_t) (T(ehat)-e)(T(ehat)-e)^T
-            #   ehat = Q k_vec, 拡張後の ehat_full, e_t_full を作る
-            ehat = self.Q.dot(k_vec)  # (N,)
-            ehat_full = np.concatenate([ehat, [0.0]])  # (N+1,)
-            e_t_full = np.zeros(N+1);  e_t_full[-1]=1.0
-            # Ut(Q)
-            Q_ext = np.pad(self.Q, ((0,1),(0,1)), mode='constant')
-            self.Q = Q_ext + (1.0/h_t)*np.outer(ehat_full-e_t_full, ehat_full-e_t_full)
-
+            # Q の拡張（2.23）
+            ehat = self.Q.dot(k_vec)
+            ehat_full = np.concatenate([ehat, [0.0]])
+            efull = np.zeros(n+1)
+            efull[-1] = 1.0
+            Q_ext = np.pad(self.Q, ((0, 1), (0, 1)), 'constant')
+            self.Q = Q_ext + (1.0/h_t)*np.outer(ehat_full-efull, ehat_full-efull)
             # X に追加
-            self.X = np.vstack([self.X, x.reshape(1,2)])
+            self.X = np.vstack([self.X, x])
+            print(f"ケース1")
 
         else:
-            # ---- (b) 既存基底のみで更新 ----
-            self.a = self.a + q_t * s_t[:-1]        # N 要素分だけ
-            self.C = self.C + r_t * np.outer(s_t[:-1], s_t[:-1])
-            # Q は変えない
+            # 基底数が上限到達 → h_t でさらに分岐
+            if h_t < self.delta:
+                # --- ケース２: discard branch (2.24) だけ更新 ---
+                ehat = self.Q.dot(k_vec)
+                s_short = self.C.dot(k_vec) + ehat     # Eq.(2.24)
+                self.a += q_t * s_short
+                self.C += r_t * np.outer(s_short, s_short)
+                # self.Q, self.X はそのまま
+                print(f"ケース2")
 
-        #―― 6) 基底数制限――
-        if self.max_basis is not None and self.X.shape[0] > self.max_basis:
-            self._prune_basis()
+            else:
+                # --- ケース３: 拡張 branch + prune (2.17→2.26) ---
+                # (2.17) で拡張
+                s_t = np.concatenate([self.C.dot(k_vec), [1.0]])
+                a_ext = np.concatenate([self.a, [0.0]])
+                C_ext = np.pad(self.C, ((0, 1), (0, 1)), 'constant')
+                self.a = a_ext + q_t * s_t
+                self.C = C_ext + r_t * np.outer(s_t, s_t)
+                # Q も拡張
+                ehat = self.Q.dot(k_vec)
+                ehat_full = np.concatenate([ehat, [0.0]])
+                efull = np.zeros(n+1)
+                efull[-1] = 1.0
+                Q_ext = np.pad(self.Q, ((0, 1), (0, 1)), 'constant')
+                self.Q = Q_ext + (1.0/h_t)*np.outer(ehat_full-efull, ehat_full-efull)
+                self.X = np.vstack([self.X, x])
+
+                # (2.26) による prune
+                self._prune_basis()
+                print(f"ケース3")
 
     def _prune_basis(self):
-        """
-        max_basis 超過時に φ_i = |a_i|/Q_{ii} が最小の基底 i を削除 (Eq 2.25–2.26)
-        """
-        N = self.X.shape[0]
+        # 1) 最も寄与が小さい j を探す
         phi = np.abs(self.a) / np.diag(self.Q)
         j = np.argmin(phi)
 
-        # j を除いたインデックス
-        idx = [i for i in range(N) if i!=j]
+        # 2) 残すインデックスを集める
+        idx = [i for i in range(len(self.a)) if i != j]
 
-        # 除去前のパラメータ
-        a_old, C_old, Q_old = self.a.copy(), self.C.copy(), self.Q.copy()
-        a_j, Q_jj = a_old[j], Q_old[j,j]
-        Q_jcol = Q_old[idx, j]  # j列のうち diag 以外
+        # 3) 取り除く前のパラメータ
+        a_new = self.a.copy()
+        C_new = self.C.copy()
+        Q_new = self.Q.copy()
 
-        # 更新後
-        self.a = a_old[idx] - (a_j/Q_jj)*Q_jcol
-        self.C = C_old[np.ix_(idx,idx)] - np.outer(Q_jcol, Q_jcol)/Q_jj
-        self.Q =  Q_old[np.ix_(idx,idx)]     - np.outer(Q_jcol, Q_jcol)/Q_jj
+        a_j = a_new[j]
+        Q_jj = Q_new[j, j]
+        C_jj = C_new[j, j]
+        Q_jcol = Q_new[idx, j]     # Q^j
+        C_jcol = C_new[idx, j]     # c_j
+
+        # 4) スライスしたパラメータ
+        a_old = a_new[idx]                         # a^{(t)}
+        C_old = C_new[np.ix_(idx, idx)]            # C^{(t)}
+        Q_old = Q_new[np.ix_(idx, idx)]            # Q^{(t)}
+
+        # 5) prune 更新
+        a_hat = a_old - (a_j / Q_jj) * Q_jcol
+        term1 = C_jj*np.outer(Q_jcol, Q_jcol) / (Q_jj**2)
+        term2 = (np.outer(Q_jcol, C_jcol) + np.outer(C_jcol, Q_jcol)) / Q_jj
+        C_hat = C_old + term1 - term2
+        Q_hat = Q_old - np.outer(Q_jcol, Q_jcol) / Q_jj
+
+        # 6) 置き換え
+        self.a = a_hat
+        self.C = C_hat
+        self.Q = Q_hat
         self.X = self.X[idx]
 
-    def predict(self, x: np.ndarray) -> Tuple[float,float]:
+    def predict(self, x: np.ndarray) -> Tuple[float, float, np.ndarray, np.ndarray]:
         """
-        平均 μ(x), 分散 σ²(x) の予測
+        平均 μ(x), 分散 σ^2(x), k_vec, C_t を返す
         """
-        if self.X.shape[0]==0:
-            return 0.0, self.kernel(x,x)
-        k_vec = np.array([self.kernel(xi,x) for xi in self.X])
+        if self.X.shape[0] == 0:
+            return 0.0, self.kernel(x, x), np.zeros(0), np.zeros((0, 0))
+        k_vec = np.array([self.kernel(xi, x) for xi in self.X])
         mu = float(self.a.dot(k_vec))
-        var = self.kernel(x,x) + float(k_vec.dot(self.C.dot(k_vec)))
+        var = self.kernel(x, x) + float(k_vec.dot(self.C.dot(k_vec)))
+
+        # # Jaakkola & Jordan のロジスティック近似
+        # z = mu / np.sqrt(1.0 + (np.pi/8.0) * var)
+        # mu = 1.0 / (1.0 + np.exp(-z))      # 予測確率 ∈ [0,1]
+        # var  = mu * (1.0 - mu)               # Bernoulli 分散 ∈ [0,0.25]
         return mu, var, k_vec, self.C
 
+# ─── Environment / GT Map ────────────────────────────────────
 
-# ─── Environment and GT Map ───────────────────────────────────
-def environment_function(pos, true_map, noise_std=0.1):
-    i, j = int(round(pos[0])), int(round(pos[1]))
-    neighborhood = true_map[max(0,i-1):i+2, max(0,j-1):j+2]
-    val = np.mean(neighborhood)
-    return float(np.clip(val + np.random.normal(0, noise_std), 0, 1))
+
+def environment_function(pos: np.ndarray,
+                              true_map: np.ndarray,
+                              noise_std: float = 0.5
+                             ) -> List[Tuple[np.ndarray, float]]:
+    """
+    pos に最も近い格子点 (i0,j0) を中心に、9点 (中心＋周囲8点) について
+      1) その点を中心とした 3x3 の平均値 val
+      2) val + N(0, noise_std^2) を [0,1] にクリップ
+    を計算し [(位置ベクトル, noisy_value), ...] のリストで返す。
+    """
+    i0, j0 = int(round(pos[0])), int(round(pos[1]))
+    H, W = true_map.shape
+    observations = []
+
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            i, j = i0 + di, j0 + dj
+            if not (0 <= i < H and 0 <= j < W):
+                continue
+
+            # そのセルを中心とした 3x3 の平均
+            imin, imax = max(0, i-1), min(H, i+2)
+            jmin, jmax = max(0, j-1), min(W, j+2)
+            local_patch = true_map[imin:imax, jmin:jmax]
+            val = np.mean(local_patch)
+
+            # ガウスノイズを乗せてクリップ
+            noisy = val + np.random.normal(loc=0.0, scale=noise_std)
+            #noisy = float(np.clip(noisy, 0.0, 1.0))
+
+            observations.append((np.array([i, j], dtype=float), noisy))
+
+    return observations
+
 
 def generate_ground_truth_map(grid_size=20):
-    gt = np.zeros((grid_size,grid_size))
-    gt[0:5,13:20] = np.random.uniform(0.8,1.0,(5,7))
-    gt[9:11,13:20] = np.random.uniform(0.8,1.0,(2,7))
-    gt[15:20,0:7] = np.random.uniform(0.8,1.0,(5,7))
-    mask = (gt==0)
-    gt[mask] = np.random.uniform(0.0,0.2,mask.sum())
+    gt = np.zeros((grid_size, grid_size))
+    gt[15:25, 3:13] = 1.0
+    gt[10:25, 20:25] = 1.0
+    gt[3:6, 13:16] = 1.0
+    gt[5:10, 5:10] = 1.0
+    mask = (gt == 0)
+    #gt[mask] = np.random.uniform(0.0, 0.2, mask.sum())
     return gt
 
+# ─── Field Limitation ──────────────────────────────────────────────
+class FieldLimitation:
+    def __init__(self, pos, alpha, grid_size: int):
+        self.field_x_min=0
+        self.field_x_max=grid_size-1
+        self.field_y_min=0
+        self.field_y_max=grid_size-1
+        self.pos= pos
+        self.alpha=alpha
+        x_cen= (self.field_x_min + self.field_x_max) / 2
+        y_cen= (self.field_y_min + self.field_y_max) / 2
+        self.center = np.array([x_cen, y_cen], dtype=float)
+        x_radius= (self.field_x_max - self.field_x_min) / 2
+        y_radius= (self.field_y_max - self.field_y_min) / 2
+        self.radius = np.array([x_radius, y_radius], dtype=float)
+
+    def calc_cbf(self):
+        L4_norm=np.power(np.sum(((self.center - self.pos) / self.radius)**4), 1/4)
+        return self.alpha*(1-L4_norm)
+
+    def calc_grad(self):
+        grad=4*((self.center - self.pos)**3)/(self.radius**4)
+        return grad
+
 # ─── UGV Controller──────────────────────────────────────────────
+
+
 class UGVController:
     def __init__(self, grid_size: int = 20, reward_type: int = 0, discount_factor: float = 0.95):
         self.grid_size = grid_size
@@ -182,15 +300,15 @@ class UGVController:
         self.visited = np.zeros((grid_size, grid_size), dtype=bool)
         self.visited[self.position[0], self.position[1]] = True
         self.expectation_map = None
-        self.variance_map  = None
+        self.variance_map = None
         self.discount_factor = discount_factor  # 割引率
-    
+
     def set_maps(self, expectation_map: np.ndarray, variance_map: np.ndarray):
         """
         UAV側から渡されたマップを保存しておくためのメソッド
         """
         self.expectation_map = expectation_map
-        self.variance_map  = variance_map
+        self.variance_map = variance_map
 
     def _calculate_reward(self, pos: np.ndarray, current_pos: np.ndarray,
                           expectation_map: np.ndarray, variance_map: np.ndarray,
@@ -223,8 +341,6 @@ class UGVController:
             nxt = pos + a
             if not (0 <= nxt[0] < self.grid_size and 0 <= nxt[1] < self.grid_size):
                 continue
-            if visited[nxt[0], nxt[1]]:
-                continue
             new_visited = visited.copy()
             new_visited[nxt[0], nxt[1]] = True
             r = self._calculate_reward(
@@ -232,6 +348,8 @@ class UGVController:
                 k1, k2, k3, k4, k5, k6, epsilon,
                 self.reward_type, step
             )
+            if visited[nxt[0], nxt[1]]:
+                r = -100
             total = r
             if depth > 1:
                 _, fut = self._recursive_search(
@@ -270,33 +388,46 @@ class UGVController:
         return path
 
 # ─── UAV Controller ──────────────────────────────────────────
+
+
 class UAVController:
-    def __init__(self, train_data_x, train_data_y: np.ndarray, grid_size, ugv: UGVController, step_of_ugv_path_used=8):
+    def __init__(self, train_data_x, train_data_y: np.ndarray, grid_size, ugv: UGVController, step_of_ugv_path_used=8, suenaga=False):
         self.r = 1.0
         self.alpha = 1.0
-        self.gamma = 3.0
-        self.k = 2.0 #unomのゲイン
+        self.gamma =1.0
+        self.k = 2.0  # unomのゲイン
         self.pos = train_data_x[0].copy()  # ← floatで初期化
         self.control_period = 0.1
-        self.gp = SparseOnlineGP(sigma0=0.1, kernel=rbf_kernel,max_basis=30,delta=1e-2)
-        self.grid_size=grid_size
-        self.v = np.zeros(2) 
+        self.gp = SparseOnlineGP(sigma0=0.4, kernel=rbf_kernel, max_basis=27, delta=0.1)
+        self.grid_size = grid_size
+        self.v = np.zeros(2)
         self.ugv = ugv
         self.step_of_ugv_path_used = step_of_ugv_path_used
+        self.suenaga=suenaga
         for x, y in zip(train_data_x, train_data_y):
             self.gp.update(x, y)
 
-    def update_map(self, environment_function: Callable[[np.ndarray], float]):
-        """
-        現在の位置での観測値を取得し、GPモデルを更新する。
-        """
-        # 1. 観測値の取得
-        observed_value = environment_function(self.pos)
+    def update_map(self, environment_function: Callable[..., List[Tuple[np.ndarray, float]]]):
+        obs_list = environment_function(self.pos)
 
-        # 2. SOGP モデルを更新
-        self.gp.update(self.pos, observed_value)
+        # GP に取り込む
+        for p_i, y_i in obs_list:
+            self.gp.update(p_i, y_i)
 
-        print(f"New observation added at {self.pos}, value = {observed_value:.3f}")
+        # 中心点の観測値だけ取り出して表示
+        # self.pos に最も近い p_i を探す
+        center_y = None
+        for p_i, y_i in obs_list:
+            if np.allclose(p_i, self.pos, atol=1e-6):
+                center_y = y_i
+                break
+
+        if center_y is not None:
+            print(f"New batch observations, center noisy = {center_y:.3f}")
+        else:
+            # もし境界で中心点そのものの観測がないなら
+            print(f"New batch observations, center did not exist in obs_list")
+
 
     def calc_objective_function(self):
         J = np.sum(self.sigma2)
@@ -308,7 +439,7 @@ class UAVController:
         ξ_J1 = ∇_p J
         ξ_J2 = 厳密な式 (A.8) に基づく 2階項
         """
-        r2 = 3.0**2  # rbfカーネルのパラメータと揃える
+        r2 = 2.0**2  # rbfカーネルのパラメータと揃える
         ns = len(self.gp.X)
         xi_J1 = np.zeros(2)
         xi_J2 = 0.0
@@ -357,10 +488,9 @@ class UAVController:
                 grad = (self.gp.kernel(self.gp.X[j], p) / r2) * (p - self.gp.X[j])
                 dot_K[j, -1] = np.dot(grad, u)
 
-
             term2 = -4 * dot_k_l.T @ self.gp.Q @ dot_K @ z_l
             term3 = 2 * dot_k_l.T @ self.gp.Q @ dot_k_l
-            term4 = 2 * z_l.T @ dot_K @self.gp.Q @ dot_K @ z_l
+            term4 = 2 * z_l.T @ dot_K @ self.gp.Q @ dot_K @ z_l
 
             # --- ξ_J2項のクロス項（最後の和） ---
             cross_term = 0.0
@@ -379,8 +509,7 @@ class UAVController:
         xi_J2 += alpha * (np.dot(xi_J1, u) + gamma)
 
         return xi_J1, xi_J2
- 
-        
+
     def get_map_estimates(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         グリッド全体に対して GP 予測を行い、平均値マップと分散マップを返す
@@ -398,7 +527,72 @@ class UAVController:
 
         return mean_map, var_map
 
-    def calc(self, environment_function: Callable[[np.ndarray], float],v_limit=1.0):
+    def path_generation_for_uav(
+        self,
+        var_map: np.ndarray,
+        rho: float = 0.95,
+        depth: int = 8,
+        use_voronoi: bool = False
+    ) -> np.ndarray:
+        """
+        var_map: (H,W) グリッド上の予測分散
+        rho    : 割引率
+        depth  : プランニング深さ
+        use_voronoi: True なら自身から遠いセルは候補から外す
+        return  : 次に向かうセル中心の [x,y]
+        """
+        H,W = var_map.shape
+        # 1) セルの座標リスト
+        cells = [(i,j) for i in range(H) for j in range(W)]
+        # 2) 初期 V, policy
+        V_prev = {c: 0.0 for c in cells}
+        policy = {c: c   for c in cells}
+
+        # 3) 隣接セル取得関数
+        def neighbors(c):
+            i,j = c
+            nbrs = []
+            for di,dj in [(-1,0),(1,0),(0,-1),(0,1)]:
+                ni,nj = i+di, j+dj
+                if 0<=ni<H and 0<=nj<W:
+                    if not use_voronoi or self._in_my_voronoi((ni,nj)):
+                        nbrs.append((ni,nj))
+            return nbrs
+
+        # 4) DP の繰り返し
+        for _ in range(depth):
+            V_cur = {}
+            for c in cells:
+                best = -1e9
+                best_n = c
+                for c2 in neighbors(c):
+                    # 報酬 R = var(c) / dist(c,c2)
+                    dist = np.hypot(c[0]-c2[0], c[1]-c2[1])
+                    if dist<1e-6: continue
+                    R = var_map[c2] / dist
+                    val = R + rho * V_prev[c2]
+                    if val > best:
+                        best, best_n = val, c2
+                V_cur[c] = best
+                policy[c] = best_n
+            V_prev = V_cur
+
+        # 5) 現在位置のセル
+        ci = int(round(self.pos[0])), int(round(self.pos[1]))
+        # 6) 次セル
+        next_cell = policy[ci]
+        # 7) その中心座標を返す
+        return np.array([next_cell[0], next_cell[1]], dtype=float)
+
+    def _in_my_voronoi(self, cell: Tuple[int,int]) -> bool:
+        """
+        （オプション）自身を基準に前もって定義した Voronoi 領域内かを返す。
+        もし UGV 等複数ロボット間の割り当てを使わないなら、常に True を返してください。
+        """
+        # 例：常に True
+        return True
+
+    def calc(self, environment_function: Callable[[np.ndarray], float], v_limit=1.0):
         # --- 1) UAV がマップ更新 ---
         self.update_map(environment_function)
         self.prob, self.sigma2, self.k_star, self.K = self.gp.predict(self.pos)
@@ -415,22 +609,40 @@ class UAVController:
         ugv_future_pos = np.array(planned[-1], dtype=float)
 
         # --- 3) nominal速度を「自分の位置 − UGV の未来位置」で定義 ---
-        v_nom = - self.k * (self.pos - ugv_future_pos)
-        nu_nom = (v_nom - self.v) / self.control_period
+        if self.k == 0:
+            nu_nom = np.zeros(2)  # k=0 の場合は制御なし
+        else:
+            v_nom = - self.k * (self.pos - ugv_future_pos)
+            nu_nom = (v_nom - self.v) / self.control_period
 
-        # --- 4) CBF 項を計算 ← 先ほど修正したシグネチャを呼び出し ---
-        xi_J1, xi_J2 = self.calc_cbf_terms(self.v, gamma=3.0, alpha=1.0)
+        if self.suenaga:
+            # 末永さんの実装
+            waypoint= self.path_generation_for_uav(V_map, rho=0.95, depth=5, use_voronoi=False)
+            k_pp=2.0
+            v_nom=-k_pp*(self.pos-waypoint)
+            nu_nom = (v_nom - self.v) / self.control_period
+            self.current_waypoint = waypoint
+
+        # --- 4) CBF 項を計算
+        xi_J1, xi_J2 = self.calc_cbf_terms(self.v, gamma=self.gamma, alpha=self.alpha)
+        cbf_J=[-xi_J2, -xi_J1[0], -xi_J1[1], 0.0001] #[h, grad_x,grad_y,slack]
+
+        # #Feild Limitation の CBF を計算
+        # field_limitation = FieldLimitation(self.pos, 0.1, self.grid_size)
+        # field_limitation_cbf = field_limitation.calc_cbf()
+        # field_limitation_grad = field_limitation.calc_grad()
+        # cbf_fieldlimitation=[field_limitation_cbf, -field_limitation_grad[0], -field_limitation_grad[1], 0]
 
         # --- 5) QP を解いて Δν を得る ---
         self.solver = solver()
-        # CBF 制約として xi_J2 を使うなら
-        self.solver.add_cbf(-xi_J2, -xi_J1[0], -xi_J1[1],slack=1.0)
-        nu= self.solver.solve_qp(nu_nom)
+        self.solver.add_cbfs([cbf_J])
+        #self.solver.add_cbfs([cbf_J, cbf_fieldlimitation])
+        nu = self.solver.solve(nu_nom)
 
         # --- 6) 状態更新 ---
         self.v += nu * self.control_period
         if np.linalg.norm(self.v) >= v_limit:
-            self.v= v_limit * self.v / np.linalg.norm(self.v)  
+            self.v = v_limit * self.v / np.linalg.norm(self.v)
         self.pos += self.v * self.control_period
 
         # --- 7) グリッドにクランプ & debug 出力 ---
@@ -439,107 +651,174 @@ class UAVController:
         self.pos[1] = np.clip(self.pos[1], 0, W-1)
         print(f"xi_J1 = {xi_J1}, norm = {np.linalg.norm(xi_J1)}")
         print(f"velocity = {np.linalg.norm(self.v)}")
+        # print(f"CBFの満たされるべき式{-xi_J1@self.v-self.gamma}")
 
 # ─── main ─────────────────────────────────────────────────────
+
+
 def main():
-    grid_size = 20
+    grid_size = 30
     gt = generate_ground_truth_map(grid_size)
+    noise_std=0.5
 
-    # 初期観測点の設定
-    start = np.array([5.0, 5.0])
-    offsets = np.array([[0,0],[1,0],[-1,0],[0,1],[0,-1]])
-    init_x = start + offsets
-    init_y = np.array([environment_function(p, gt) for p in init_x])
+    # 初期観測点
+    start = np.array([12.0, 15.0])
 
-    # コントローラ初期化
+    # 1) ９点まとめて観測
+    init_obs = environment_function(start, gt, noise_std=0.5)
+    # 2) 観測点位置だけ取り出して配列に
+    init_x = np.vstack([ p for p, _ in init_obs ])   # shape (9,2)
+    # 3) 観測値だけ取り出して配列に
+    init_y = np.array([ y for _, y in init_obs ])    # shape (9,)
+
+    # コントローラ生成
     ugv = UGVController(grid_size, reward_type=3, discount_factor=0.95)
-    uav = UAVController(init_x, init_y, grid_size, ugv=ugv, step_of_ugv_path_used=5)
+    uav = UAVController(init_x, init_y, grid_size,
+                        ugv=ugv, step_of_ugv_path_used=6,suenaga=False)
 
+    # インタラクティブ表示設定
     plt.ion()
     fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-
-    # ── 真値マップを薄グレーで背景表示 ──
     ax[0].imshow(gt, origin='lower', cmap='gray', alpha=0.3)
-
-    # ── 推定 Mean / Variance マップの初期化 ──
-    im0 = ax[0].imshow(
-        np.zeros((grid_size, grid_size)),
-        vmin=0, vmax=1,
-        cmap='jet',
-        origin='lower'
-    )
-    im1 = ax[1].imshow(
-        np.zeros((grid_size, grid_size)),
-        vmin=0, vmax=1,
-        cmap='jet',
-        origin='lower'
-    )
-
-    # ── カラーバー（凡例）の追加 ──
+    im0 = ax[0].imshow(np.zeros((grid_size, grid_size)), vmin=0, vmax=1, cmap='jet', origin='lower')
+    im1 = ax[1].imshow(np.zeros((grid_size, grid_size)), vmin=0, vmax=1, cmap='jet', origin='lower')
     cb0 = fig.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
     cb0.set_label('Estimated mean')
     cb1 = fig.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
     cb1.set_label('Estimated variance')
 
-    # ── 軌跡・現在位置・計画経路のラインオブジェクト ──
+    ax[0].imshow(gt, origin='lower', cmap='gray', alpha=0.3)
+    # 真値領域の境界を白線で表示
+    ax[0].contour(
+        gt, 
+        levels=[0.5],            # 真値が1の領域と0の領域の境界
+        colors='white', 
+        linewidths=2, 
+        origin='lower'
+    )
+    im0 = ax[0].imshow(
+        np.zeros((grid_size, grid_size)), 
+        vmin=0, vmax=1, cmap='jet', origin='lower'
+    )
+
+    # 軌跡用オブジェクト
     traj_uav = [uav.pos.copy()]
     traj_ugv = [ugv.position.copy()]
-    uav_line, = ax[0].plot([], [], '-o', color='cyan',   markersize=3, label='UAV Path')
-    ugv_line, = ax[0].plot([], [], '-x', color='yellow', markersize=3, label='UGV Path')
-    plan_line,= ax[0].plot([], [], '--*', color='magenta',markersize=4, label='UGV Planned')
-    uav_dot,  = ax[0].plot([], [], 'ro', label='UAV')
-    ugv_dot,  = ax[0].plot([], [], 'bo', label='UGV')
+    waypoint_dot, = ax[0].plot([], [], 'ms', markersize=6, label='UAV Waypoint', zorder=15)
+    uav_line, = ax[0].plot([], [], '-o', color='cyan',   markersize=3, label='UAV Path', zorder=10)
+    ugv_line, = ax[0].plot([], [], '-x', color='black',  markersize=3, label='UGV Path', zorder=11)
+    plan_line, = ax[0].plot([], [], '--*', color='magenta', markersize=4, label='UGV Planned', zorder=12)
+    uav_dot,  = ax[0].plot([], [], 'ro', label='UAV', zorder=13)
+    ugv_dot,  = ax[0].plot([], [], 'wo', label='UGV', zorder=14)
     ax[0].legend(loc='upper right')
+    ax[0].set_xlim(0, grid_size-1)
+    ax[0].set_ylim(0, grid_size-1)
+    ax[0].autoscale(False)
 
-    # ── メインループ ──
-    for step in range(300):
-        # UAV 更新
-        uav.calc(lambda p: environment_function(p, gt), v_limit=5.0)
-        # GP 推定マップ取得
+    # J の履歴
+    J_history = []
+    true_sum_history = []
+
+    # メインループ
+    for step in range(600):
+        depth = 8  # UGV の計画深さ
+        uav.calc(lambda p: environment_function(p, gt, noise_std), v_limit=25.0)
         m_map, v_map = uav.get_map_estimates()
-        # UGV 更新
-        ugv.calc(m_map, v_map, depth=10, step=step+1)
+        ugv.calc(m_map, v_map, depth=depth, step=step+1)
 
-        # 軌跡・計画経路を記録
+        _, v_map = uav.get_map_estimates()
+        J = np.sum(v_map)
+        J_history.append(J)
+
+        total_crop = np.sum(gt[ ugv.visited ])  # ブールマスクで累積訪問セルの真値を足す
+        true_sum_history.append(total_crop)
+
         traj_uav.append(uav.pos.copy())
         traj_ugv.append(ugv.position.copy())
-        planned = ugv.get_planned_path(m_map, v_map, depth=10)
+        planned = ugv.get_planned_path(m_map, v_map, depth=depth)
 
-        # ── 画像データ更新 ──
         im0.set_data(m_map)
+        # im0.set_clim(np.min(m_map), np.max(m_map))
         im1.set_data(v_map)
-        # Variance の色スケールを動的に再設定
-        im1.set_clim(v_map.min(), v_map.max())
+        # im1.set_clim(np.min(v_map), np.max(v_map))
 
-        # ── ラインデータ更新 ──
         pu = np.array(traj_uav)
         pv = np.array(traj_ugv)
         pp = np.array(planned)
-        uav_line.set_data(pu[:,1], pu[:,0])
-        ugv_line.set_data(pv[:,1], pv[:,0])
-        plan_line.set_data(pp[:,1], pp[:,0])
+        # UAV ウェイポイント（suenaga モード時のみ存在）
+        if hasattr(uav, 'current_waypoint'):
+            wp = uav.current_waypoint
+            waypoint_dot.set_data(wp[1], wp[0])
+        uav_line.set_data(pu[:, 1], pu[:, 0])
+        ugv_line.set_data(pv[:, 1], pv[:, 0])
+        plan_line.set_data(pp[:, 1], pp[:, 0])
         uav_dot.set_data([uav.pos[1]], [uav.pos[0]])
         ugv_dot.set_data([ugv.position[1]], [ugv.position[0]])
 
-        # タイトル更新＆描画
         ax[0].set_title(f"Step {step} Mean")
         ax[1].set_title(f"Step {step} Var")
         fig.canvas.draw()
         plt.pause(uav.control_period)
 
+    # インタラクティブ終了
     plt.ioff()
+    plt.close(fig)
 
-    # ── 最終軌跡表示 ──
-    traj_uav = np.array(traj_uav)
-    traj_ugv = np.array(traj_ugv)
-    plt.figure(figsize=(6,6))
-    plt.imshow(gt, origin='lower', cmap='jet', vmin=0, vmax=1)
-    plt.plot(traj_uav[:,1], traj_uav[:,0], '-o', color='cyan',   label='UAV Path')
-    plt.plot(traj_ugv[:,1], traj_ugv[:,0], '-x', color='yellow', label='UGV Path')
+    # UGV が収穫（訪問）した作物の合計を真値マップから計算して表示
+    visited = ugv.visited  # ブール配列
+    total_crop = np.sum(gt[visited])
+    print(f"UGV が訪問した作物の合計（真値）: {total_crop:.3f}")
+    df = pd.DataFrame({
+        'step': np.arange(len(J_history)),
+        'J': J_history,
+        'true_crop_sum': true_sum_history
+    })
+    df.to_csv('uav_ugv_results.csv', index=False)
+    print("results saved to uav_ugv_results.csv")
+
+    # 最終結果の並列表示
+    final_mean, final_var = uav.get_map_estimates()
+    fig2, axes = plt.subplots(1, 3, figsize=(15, 5))
+    im_true = axes[0].imshow(gt, origin='lower', cmap='jet', vmin=0.0, vmax=1.0)
+    axes[0].set_title("True Map")
+    plt.colorbar(im_true, ax=axes[0], fraction=0.046, pad=0.04)
+
+    im_mean = axes[1].imshow(final_mean, origin='lower', cmap='jet')
+    axes[1].set_title("Estimated Mean")
+    plt.colorbar(im_mean, ax=axes[1], fraction=0.046, pad=0.04)
+
+    im_var = axes[2].imshow(final_var, origin='lower', cmap='jet')
+    axes[2].set_title("Estimated Variance")
+    plt.colorbar(im_var,  ax=axes[2], fraction=0.046, pad=0.04)
+
+    # UGV 軌跡を重ねて描画
+    pv = np.array(traj_ugv)  # もともとメインループ外に保持しているリスト
+    for ax in axes:
+        ax.plot(pv[:, 1], pv[:, 0], '-x', color='black', markersize=4, label='UGV Path')
+    # 凡例は一度だけ表示
+    axes[0].legend(loc='upper right')
+
+    plt.tight_layout()
+    plt.show(block=True)    # ← ここを必ず True にして止める
+
+    # J_history に入っているのは各ステップの J
+    t = np.arange(len(J_history))          # 0,1,2,…ステップの配列
+    J0 = J_history[0]                      # 初期J
+    gamma = uav.gamma                      # UAVController の γ
+
+    # 理論線：J0 - γ*t
+    theory = J0 - gamma * t
+
+    plt.figure(figsize=(6,4))
+    plt.plot(t, J_history, '-o', markersize=3, label='実測 J')
+    plt.plot(t, theory, '--', label=f'$J_0 - \\gamma t$')
+    plt.xlabel('Step')
+    plt.ylabel('J (総分散)')
+    plt.title('Objective $J$ の推移と理論直線')
+    plt.grid(True)
     plt.legend()
-    plt.title("Trajectories")
-    plt.show()
+    plt.show(block=True)
+
 
 if __name__ == "__main__":
     main()
-
