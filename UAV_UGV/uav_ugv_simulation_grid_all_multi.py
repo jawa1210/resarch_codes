@@ -789,8 +789,7 @@ class UAVController:
             # ⇒ suenaga（WayPoint追従）へスイッチ
             #    自Voronoi外は探索させたい想定なので use_voronoi=True を推奨
             waypoint = self.path_generation_for_uav(V_map, rho=0.95, depth=5, use_voronoi=True)
-            k_pp = self.k_pp
-            v_nom = -k_pp * (self.pos - waypoint)
+            v_nom = -self.k_pp * (self.pos - waypoint)
             nu_nom = (v_nom - self.v) / self.control_period
             self.current_waypoint = waypoint
         else:
@@ -803,6 +802,12 @@ class UAVController:
                     nu_nom = (v_nom - self.v) / self.control_period
                 if hasattr(self, 'current_waypoint'):
                     delattr(self, 'current_waypoint')
+            else:
+                # ← ここが抜けると未代入だった（探索のフォールバックを必ず入れる）
+                waypoint = self.path_generation_for_uav(V_map, rho=0.95, depth=5, use_voronoi=True)
+                v_nom = - self.k_pp * (self.pos - waypoint)
+                nu_nom = (v_nom - self.v) / self.control_period
+                self.current_waypoint = waypoint
 
         # --- 4) CBF/QP ---
         xi_J1, xi_J2 = self.calc_cbf_terms(self.v, gamma=self.gamma, alpha=self.alpha)
@@ -846,7 +851,7 @@ def main():
     #UAV
     v_limit    = 25.0
     step_of_ugv_path_used = 6
-    suenaga_on = True
+    suenaga_on = False
     unom_gain=2.0
     suenaga_gain=2.0
     cbf_j_alpha=1.0
