@@ -1,0 +1,2 @@
+grid_size,num_uavs,num_ugvs,steps,noise_std,v_limit,gp_sigma0,gp_max_basis,gp_delta,rbf_sigma,case1_count,case2_count,case3_count
+50,3,2,600,0.5,25.0,0.4,100,0.05,2.0,100,2121,2876
