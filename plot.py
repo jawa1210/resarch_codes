@@ -56,5 +56,5 @@ def plot_files(file_list, gamma=3.0):
 
 if __name__ == "__main__":
     # 1つだけプロットしたいときは ['with_ugv_path.csv'] のようにリストを1要素にする
-    files = ['with_ugv_path.csv', 'change_update_period.csv']  # 実際のファイル名に置き換えてください
+    files = ['with_ugv_path.csv', 'uav_multiugv_results.csv']  # 実際のファイル名に置き換えてください
     plot_files(files)
