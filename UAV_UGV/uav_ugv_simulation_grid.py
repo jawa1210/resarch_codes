@@ -103,16 +103,16 @@ class SparseOnlineGP:
         f_star = float(self.a.dot(k_vec))
         var_star = float(k_tt + k_vec.dot(self.C.dot(k_vec)))
 
-        # ―― 2) q_t, r_t の計算 (Eq.2.20–2.21) ――
+        # ―― 2) q_t, r_t の計算 ――
         denom = var_star + self.sigma0**2
         q_t = (y - f_star) / denom
         r_t = -1.0 / denom
 
-        # ―― 3) ノベリティ h_t の計算 (Eq.2.22) ――
+        # ―― 3) ノベリティ h_t の計算 ――
         h_t = k_tt - k_vec.dot(self.Q.dot(k_vec))
 
         n = self.X.shape[0]
-        # --- 【ケース１】基底数に余裕あり → 常に拡張 branch (2.17) ---
+        # --- 基底数に余裕あり → 常に拡張 branch ---
         if self.max_basis is None or n < self.max_basis:
             # 2.17 の a,C,Q 拡張更新
             s_t = np.concatenate([self.C.dot(k_vec), [1.0]])
@@ -121,14 +121,14 @@ class SparseOnlineGP:
             C_ext = np.pad(self.C, ((0, 1), (0, 1)), 'constant')
             self.a = a_ext + q_t * s_t
             self.C = C_ext + r_t * np.outer(s_t, s_t)
-            # Q の拡張（2.23）
+            # Q の拡張
             ehat = self.Q.dot(k_vec)
             ehat_full = np.concatenate([ehat, [0.0]])
             efull = np.zeros(n+1)
             efull[-1] = 1.0
             Q_ext = np.pad(self.Q, ((0, 1), (0, 1)), 'constant')
             self.Q = Q_ext + (1.0/h_t)*np.outer(ehat_full-efull, ehat_full-efull)
-            # X に追加
+            # X
             self.X = np.vstack([self.X, x])
             print(f"ケース1")
 
@@ -406,8 +406,9 @@ class UAVController:
     def __init__(self, train_data_x, train_data_y: np.ndarray, grid_size, ugv: UGVController, step_of_ugv_path_used=8, suenaga=False, map_publish_period: float = 0.5):
         self.r = 1.0
         self.alpha = 1.0
-        self.gamma =1.0
+        self.gamma =0.5
         self.k = 1.0 # unomのゲイン
+        self.k_pp = 1.0    # ← 追加：waypoint用の比例ゲイン (式(3.9) の k_pp)
         self.pos = train_data_x[0].copy()  # ← floatで初期化
         self.control_period = 0.1
         self.gp = SparseOnlineGP(sigma0=0.4, kernel=rbf_kernel, max_basis=27, delta=0.1)
@@ -417,6 +418,7 @@ class UAVController:
         self.step_of_ugv_path_used = step_of_ugv_path_used
         self.suenaga=suenaga
         self.map_publish_period = map_publish_period
+        self.peer_uavs: List[np.ndarray]=[]
 
         for x, y in zip(train_data_x, train_data_y):
             self.gp.update(x, y)
@@ -558,61 +560,66 @@ class UAVController:
 
         return mean_map, var_map
 
+    def set_peer_uavs(self, peers: List[np.ndarray]):
+        self.peer_uavs = [np.asarray(p, dytpe=float) for p in (peers or [])]
+
+    def _voronoi_mask_uavs_only(self) -> np.ndarray:
+        """自身 vs 他UAV だけで Voronoi。UAVが自分1機なら全域 True。"""
+        H = W = self.grid_size
+        if not self.peer_uavs:  # 単機
+            return np.ones((H, W), dtype=bool)
+
+        mask = np.ones((H, W), dtype=bool)
+        for i in range(H):
+            for j in range(W):
+                d_self = math.hypot(self.pos[0]-i, self.pos[1]-j)
+                d_peer = min(math.hypot(p[0]-i, p[1]-j) for p in self.peer_uavs)
+                if d_self > d_peer:
+                    mask[i, j] = False
+        return mask
+
+
     def path_generation_for_uav(
         self,
         var_map: np.ndarray,
         rho: float = 0.95,
         depth: int = 8,
-        use_voronoi: bool = False
+        use_voronoi: bool = True,
+        eta: float = 1.0,     # 報酬の距離べき（論文の ι）
+        stride: int = 1       # 全結合の計算量削減用の間引き
     ) -> np.ndarray:
-        """
-        var_map: (H,W) グリッド上の予測分散
-        rho    : 割引率
-        depth  : プランニング深さ
-        use_voronoi: True なら自身から遠いセルは候補から外す
-        return  : 次に向かうセル中心の [x,y]
-        """
-        H,W = var_map.shape
-        # 1) セルの座標リスト
-        cells = [(i,j) for i in range(H) for j in range(W)]
-        # 2) 初期 V, policy
-        V_prev = {c: 0.0 for c in cells}
-        policy = {c: c   for c in cells}
+        H, W = var_map.shape
+        vor_mask = self._voronoi_mask_uavs_only() if use_voronoi else np.ones((H, W), dtype=bool)
 
-        # 3) 隣接セル取得関数
-        def neighbors(c):
-            i,j = c
-            nbrs = []
-            for di,dj in [(-1,0),(1,0),(0,-1),(0,1)]:
-                ni,nj = i+di, j+dj
-                if 0<=ni<H and 0<=nj<W:
-                    if not use_voronoi or self._in_my_voronoi((ni,nj)):
-                        nbrs.append((ni,nj))
-            return nbrs
+        # 候補セル（Voronoi 内）を全結合遷移で評価
+        cells = [(i, j) for i in range(0, H, stride) for j in range(0, W, stride) if vor_mask[i, j]]
+        if not cells:
+            cells = [(int(round(self.pos[0])), int(round(self.pos[1])))]
 
-        # 4) DP の繰り返し
+        V = {c: 0.0 for c in cells}
+        policy = {c: c for c in cells}
+        eps_d = 1e-6
+
         for _ in range(depth):
-            V_cur = {}
+            V_new = {}
             for c in cells:
-                best = -1e9
-                best_n = c
-                for c2 in neighbors(c):
-                    # 報酬 R = var(c) / dist(c,c2)
-                    dist = np.hypot(c[0]-c2[0], c[1]-c2[1])
-                    if dist<1e-6: continue
-                    R = var_map[c2] / dist
-                    val = R + rho * V_prev[c2]
+                best, best_next = -1e9, c
+                for c2 in cells:
+                    if c2 == c:
+                        continue
+                    dist = math.hypot(c[0]-c2[0], c[1]-c2[1])
+                    R = float(var_map[c2]) / ((dist**eta) + eps_d)  # 式(3.6)
+                    val = R + rho * V[c2]
                     if val > best:
-                        best, best_n = val, c2
-                V_cur[c] = best
-                policy[c] = best_n
-            V_prev = V_cur
+                        best, best_next = val, c2
+                V_new[c] = best
+                policy[c] = best_next
+            V = V_new
 
-        # 5) 現在位置のセル
-        ci = int(round(self.pos[0])), int(round(self.pos[1]))
-        # 6) 次セル
+        ci = (int(round(self.pos[0])), int(round(self.pos[1])))
+        if ci not in policy:  # 現在セルが候補集合に無い場合は最近傍に写像
+            ci = min(cells, key=lambda c: math.hypot(c[0]-self.pos[0], c[1]-self.pos[1]))
         next_cell = policy[ci]
-        # 7) その中心座標を返す
         return np.array([next_cell[0], next_cell[1]], dtype=float)
 
     def _in_my_voronoi(self, cell: Tuple[int,int]) -> bool:
@@ -639,26 +646,32 @@ class UAVController:
         planned = self.ugv.get_planned_path(E_map, V_map, depth=self.step_of_ugv_path_used)
         ugv_future_pos = np.array(planned[-1], dtype=float)
 
-        # --- 3) nominal 速度 ---
-        if self.k == 0:
-            nu_nom = np.zeros(2)
-        else:
-            v_nom = - self.k * (self.pos - ugv_future_pos)
+        # --- 3) nominal 速度 --
+        if self.suenaga:
+            waypoint = self.path_generation_for_uav(V_map, rho=0.95, depth=5, use_voronoi=True)
+            self.current_waypoint=waypoint
+            v_nom = -self.k_pp*(self.pos - waypoint)
             nu_nom = (v_nom - self.v) / self.control_period
 
-        if self.suenaga:
-            waypoint = self.path_generation_for_uav(V_map, rho=0.95, depth=5, use_voronoi=False)
-            k_pp = 2.0
-            v_nom = -k_pp*(self.pos - waypoint)
-            nu_nom = (v_nom - self.v) / self.control_period
-            self.current_waypoint = waypoint
+        else:
+            if self.k == 0:
+                nu_nom = np.zeros(2)
+            else:
+                v_nom = - self.k * (self.pos - ugv_future_pos)
+                nu_nom = (v_nom - self.v) / self.control_period
 
         # --- 4) CBF/QP ---
         xi_J1, xi_J2 = self.calc_cbf_terms(self.v, gamma=self.gamma, alpha=self.alpha)
-        cbf_J = [-xi_J2, -xi_J1[0], -xi_J1[1], 0.0001]
+        cbf_J = [-xi_J2, -xi_J1[0], -xi_J1[1], 1.0]
         self.solver = solver()
         self.solver.add_cbfs([cbf_J])
+
+        # QPの直前
+        dot_violate = float(np.dot(xi_J1, nu_nom))
+        print(f"dot(xi_J1, u_nom) = {dot_violate:.3f},  rhs = {-xi_J2:.3f}")
         nu = self.solver.solve(nu_nom)
+        # QPの直後
+        print(f"dot(xi_J1, nu_sol) = {np.dot(xi_J1, nu):.3f}")
 
         # --- 5) 状態更新 ---
         self.v += nu * self.control_period
@@ -695,7 +708,7 @@ def main():
     # コントローラ生成
     ugv = UGVController(grid_size, reward_type=3, discount_factor=0.95,steps_per_cell=10)
     uav = UAVController(init_x, init_y, grid_size,
-                        ugv=ugv, step_of_ugv_path_used=6,suenaga=True, map_publish_period=1.0)
+                        ugv=ugv, step_of_ugv_path_used=6,suenaga=False, map_publish_period=1.0)
 
     ENABLE_LIVE_PLOT = True          # 逐次の2画面（Mean/Var）更新をするなら True
     ENABLE_FINAL_MAPS_PLOT = True     # 最後に True/Mean/Var の三面図を出す
