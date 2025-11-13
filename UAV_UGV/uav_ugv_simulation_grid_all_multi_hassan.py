@@ -117,8 +117,30 @@ class SparseOnlineGP:
         h_t = k_tt - k_vec.dot(self.Q.dot(k_vec))
 
         n = self.X.shape[0]
+        # --- 【ケース１】基底数に余裕あり → 常に拡張 branch (2.17) ---
+        if self.max_basis is None or n < self.max_basis:
+            # 2.17 の a,C,Q 拡張更新
+            s_t = np.concatenate([self.C.dot(k_vec), [1.0]])
+            # a, C の拡張
+            a_ext = np.concatenate([self.a, [0.0]])
+            C_ext = np.pad(self.C, ((0, 1), (0, 1)), 'constant')
+            self.a = a_ext + q_t * s_t
+            self.C = C_ext + r_t * np.outer(s_t, s_t)
+            # Q の拡張（2.23）
+            ehat = self.Q.dot(k_vec)
+            ehat_full = np.concatenate([ehat, [0.0]])
+            efull = np.zeros(n+1)
+            efull[-1] = 1.0
+            Q_ext = np.pad(self.Q, ((0, 1), (0, 1)), 'constant')
+            self.Q = Q_ext + (1.0/h_t)*np.outer(ehat_full-efull, ehat_full-efull)
+            # X に追加
+            self.X = np.vstack([self.X, x])
+            self.count_case1 += 1
+            print(f"[SOGP] ケース1 拡張(新しい情報がきた！)：新しい基底を追加 (現在 {self.X.shape[0]+1} 基底)")
 
-        if h_t < self.delta: # 基底数が上限到達 → h_t でさらに分岐
+        else:
+            # 基底数が上限到達 → h_t でさらに分岐
+            if h_t < self.delta:
                 # --- ケース２: discard branch (2.24) だけ更新 ---
                 ehat = self.Q.dot(k_vec)
                 s_short = self.C.dot(k_vec) + ehat     # Eq.(2.24)
@@ -127,28 +149,6 @@ class SparseOnlineGP:
                 # self.Q, self.X はそのまま
                 self.count_case2 += 1
                 print(f"[SOGP] ケース2 更新(似た情報なので上書き！)：既存基底を更新のみ (h_t={h_t:.4f} < δ={self.delta})")
-
-        # --- 【ケース１】基底数に余裕あり → 常に拡張 branch (2.17) ---
-        else:
-            if self.max_basis is None or n < self.max_basis:
-                # 2.17 の a,C,Q 拡張更新
-                s_t = np.concatenate([self.C.dot(k_vec), [1.0]])
-                # a, C の拡張
-                a_ext = np.concatenate([self.a, [0.0]])
-                C_ext = np.pad(self.C, ((0, 1), (0, 1)), 'constant')
-                self.a = a_ext + q_t * s_t
-                self.C = C_ext + r_t * np.outer(s_t, s_t)
-                # Q の拡張（2.23）
-                ehat = self.Q.dot(k_vec)
-                ehat_full = np.concatenate([ehat, [0.0]])
-                efull = np.zeros(n+1)
-                efull[-1] = 1.0
-                Q_ext = np.pad(self.Q, ((0, 1), (0, 1)), 'constant')
-                self.Q = Q_ext + (1.0/h_t)*np.outer(ehat_full-efull, ehat_full-efull)
-                # X に追加
-                self.X = np.vstack([self.X, x])
-                self.count_case1 += 1
-                print(f"[SOGP] ケース1 拡張(新しい情報がきた！)：新しい基底を追加 (現在 {self.X.shape[0]+1} 基底)")
 
             else:
                 # --- ケース３: 拡張 branch + prune (2.17→2.26) ---
