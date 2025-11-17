@@ -836,9 +836,9 @@ def main(visualize: bool = True):
     #全体
     grid_size  = 50
     noise_std  = 0.5
-    num_uavs   = 2
-    num_ugvs   = 1            # ★ 複数UGV
-    steps      = 100
+    num_uavs   = 3
+    num_ugvs   = 2            # ★ 複数UGV
+    steps      = 600
     map_publish_preriod = 0.5
 
     #UGV
