@@ -233,8 +233,8 @@ def environment_function(pos: np.ndarray,
                          noise_std: float = 0.5
                          ) -> List[Tuple[np.ndarray, float]]:
     """
-    pos に最も近い格子点 (i0,j0) を中心に、81点 (中心＋周囲8点) について
-      1) その点を中心とした 9x9 の平均値 val
+    pos に最も近い格子点 (i0,j0) を中心に、9点 (中心＋周囲8点) について
+      1) その点を中心とした 3x3 の平均値 val
       2) val + N(0, noise_std^2) を [0,1] にクリップ
     を計算し [(位置ベクトル, noisy_value), ...] のリストで返す。
     """

@@ -695,7 +695,7 @@ class UAVController:
 
         return mean_map, var_map
 
-    def path_generation_for_uav(self, var_map, rho=0.95, depth=8, use_voronoi=False):
+    def path_generation_for_uav_suenaga(self, var_map, rho=0.95, depth=8, use_voronoi=False):
         H, W = var_map.shape
 
         if use_voronoi and hasattr(self, "_voronoi_mask") and self._voronoi_mask is not None:
@@ -754,6 +754,56 @@ class UAVController:
         next_cell = policy.get(ci, ci)
         return np.array([next_cell[0], next_cell[1]], dtype=float)
 
+    def path_generation_for_uav(self, var_map, use_voronoi=False):
+        """
+        分散 var_map と現在位置 self.pos から、
+        score = variance / distance を最大にするセルそのものを返す版。
+        近傍ステップはせず、グリッド上の best cell をそのまま次の目標にする。
+        """
+        H, W = var_map.shape
+
+        # ---- 現在セル（グリッドインデックス） ----
+        ci = np.array([int(round(self.pos[0])), int(round(self.pos[1]))], dtype=int)
+        ci[0] = np.clip(ci[0], 0, H - 1)
+        ci[1] = np.clip(ci[1], 0, W - 1)
+
+        # ---- Voronoi マスクの処理（担当領域があれば現在位置をスナップ） ----
+        allowed_mask = None
+        if use_voronoi and hasattr(self, "_voronoi_mask") and self._voronoi_mask is not None:
+            allowed_mask = self._voronoi_mask.astype(bool)
+
+            # もし担当領域に1つもセルがない場合 → 動きようがないので今のセルを返す
+            if not np.any(allowed_mask):
+                return ci.astype(float)
+
+            # 現在位置が担当外なら、一番近い allowed にスナップ
+            if not allowed_mask[ci[0], ci[1]]:
+                idxs = np.argwhere(allowed_mask)
+                d = np.hypot(idxs[:, 0] - ci[0], idxs[:, 1] - ci[1])
+                ci = idxs[np.argmin(d)]
+
+        # ---- 全マスの距離とスコアを計算 ----
+        I, J = np.indices((H, W))                # I[i,j] = i, J[i,j] = j
+        dist = np.hypot(I - ci[0], J - ci[1])    # 各セルまでの距離
+        dist[dist < 1e-6] = 1.0                  # 自分自身は距離1扱い（0割り防止）
+
+        score = var_map / dist                   # 近くて分散が高いほど高スコア
+
+        # ---- Voronoi がある場合は担当領域外のスコアを無効化 ----
+        if allowed_mask is not None:
+            score[~allowed_mask] = -np.inf
+
+        # ---- スコアが有限なセルがなければ、その場にとどまる ----
+        if not np.isfinite(score).any():
+            return ci.astype(float)
+
+        # ---- score 最大のセルをそのまま次の目標にする ----
+        ti, tj = np.unravel_index(np.nanargmax(score), score.shape)
+        next_cell = np.array([ti, tj], dtype=float)
+
+        return next_cell
+
+
     def set_voronoi_mask(self, mask: np.ndarray):
         self._voronoi_mask = mask
 
@@ -788,7 +838,7 @@ class UAVController:
         if self.suenaga:
             # ⇒ suenaga（WayPoint追従）へスイッチ
             #    自Voronoi外は探索させたい想定なので use_voronoi=True を推奨
-            waypoint = self.path_generation_for_uav(V_map, rho=0.95, depth=5, use_voronoi=True)
+            waypoint = self.path_generation_for_uav_suenaga(V_map, rho=0.95, depth=5, use_voronoi=True)
             v_nom = -self.k_pp * (self.pos - waypoint)
             nu_nom = (v_nom - self.v) / self.control_period
             self.current_waypoint = waypoint
@@ -804,7 +854,7 @@ class UAVController:
                     delattr(self, 'current_waypoint')
             else:
                 # ← ここが抜けると未代入だった（探索のフォールバックを必ず入れる）
-                waypoint = self.path_generation_for_uav(V_map, rho=0.95, depth=5, use_voronoi=True)
+                waypoint = self.path_generation_for_uav(V_map, use_voronoi=True)
                 v_nom = - self.k_pp * (self.pos - waypoint)
                 nu_nom = (v_nom - self.v) / self.control_period
                 self.current_waypoint = waypoint
@@ -836,8 +886,8 @@ def main(visualize: bool = True):
     #全体
     grid_size  = 50
     noise_std  = 0.5
-    num_uavs   = 2
-    num_ugvs   = 1            # ★ 複数UGV
+    num_uavs   = 3
+    num_ugvs   = 2            # ★ 複数UGV
     steps      = 100
     map_publish_preriod = 0.5
 
@@ -862,7 +912,7 @@ def main(visualize: bool = True):
     rbf_sigma=2.0
 
     #visualize
-    visualize=False
+    visualize=True
 
     gt = generate_ground_truth_map(grid_size)
 
