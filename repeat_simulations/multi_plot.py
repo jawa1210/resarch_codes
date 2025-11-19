@@ -29,54 +29,107 @@ def _ensure_run_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _infer_param_file(results_path: str) -> str | None:
+    """
+    results ファイルパスから、対応する params ファイルパスを推定する。
+    例: xxx_results_10runs.csv → xxx_params_10runs.csv
+    """
+    base = os.path.basename(results_path)
+    if "results" not in base:
+        return None
+    param_base = base.replace("results", "params")
+    param_path = os.path.join(os.path.dirname(results_path), param_base)
+    if os.path.exists(param_path):
+        return param_path
+    return None
+
+
+def _load_num_uavs_from_param(param_path: str) -> int | None:
+    """
+    params CSV から num_uavs を読む。
+    読み込みに失敗したら None を返す。
+    """
+    try:
+        dfp = pd.read_csv(param_path)
+        if "num_uavs" not in dfp.columns:
+            print(f"[WARN] {param_path} に 'num_uavs' 列がありません。")
+            return None
+        N = int(dfp["num_uavs"].iloc[0])
+        print(f"[INFO] {param_path} から num_uavs = {N} を取得しました。")
+        return N
+    except Exception as e:
+        print(f"[WARN] パラメータファイル読み込み失敗: {param_path} -> {e}")
+        return None
+
+
 def plot_two_results_files(
     file1: str,
-    file2: str,
+    file2: str | None = None,     # ← ここを None 許可に
     label1: str | None = None,
     label2: str | None = None,
     dt: float = 0.1,
+    gamma: float = 3.0,
 ):
+    """
+    file2 を None にすると単独ファイルのプロットになる。
+    file2 を指定すると 2条件比較プロットになる。
+
+    gamma: 1 UAV あたりの「1秒あたりの減少量 γ」
+    → 理論線: J_ideal(t) = J0 - N_uav * gamma * t
+    """
     # ── CSV 読み込み ───────────────────────────
     df1 = pd.read_csv(file1)
-    df2 = pd.read_csv(file2)
-
     print("=== file1 head ===")
     print(df1.head())
-    print("=== file2 head ===")
-    print(df2.head())
 
     df1 = _ensure_run_column(df1)
-    df2 = _ensure_run_column(df2)
-
-    # NaN 行は落とす
     df1 = df1.dropna(subset=["step", "J", "true_crop_sum"])
-    df2 = df2.dropna(subset=["step", "J", "true_crop_sum"])
 
     if label1 is None:
         label1 = _nice_label_from_path(file1)
-    if label2 is None:
-        label2 = _nice_label_from_path(file2)
+
+    # file2 があるかどうかで分岐
+    if file2 is not None:
+        df2 = pd.read_csv(file2)
+        print("=== file2 head ===")
+        print(df2.head())
+
+        df2 = _ensure_run_column(df2)
+        df2 = df2.dropna(subset=["step", "J", "true_crop_sum"])
+
+        if label2 is None:
+            label2 = _nice_label_from_path(file2)
+
+        has_second = not df2.empty
+    else:
+        df2 = None
+        has_second = False
 
     runs1 = sorted(df1["run"].unique())
-    runs2 = sorted(df2["run"].unique())
     print(f"{label1}: runs = {runs1}")
-    print(f"{label2}: runs = {runs2}")
+    if has_second:
+        runs2 = sorted(df2["run"].unique())
+        print(f"{label2}: runs = {runs2}")
 
     # ── 平均曲線（step ごと）─────────────────────
     mean1 = df1.groupby("step")[["J", "true_crop_sum"]].mean().reset_index()
-    mean2 = df2.groupby("step")[["J", "true_crop_sum"]].mean().reset_index()
-
-    if mean1.empty or mean2.empty:
-        print("平均用のデータが空です。CSV の中身を確認してください。")
+    if mean1.empty:
+        print("file1 の平均用データが空です。CSV を確認してください。")
         return
 
-    t1_mean = mean1["step"].to_numpy() * dt
+    t1_mean = mean1["step"].to_numpy() * dt   # 秒
     J1_mean = mean1["J"].to_numpy()
     C1_mean = mean1["true_crop_sum"].to_numpy()
 
-    t2_mean = mean2["step"].to_numpy() * dt
-    J2_mean = mean2["J"].to_numpy()
-    C2_mean = mean2["true_crop_sum"].to_numpy()
+    if has_second:
+        mean2 = df2.groupby("step")[["J", "true_crop_sum"]].mean().reset_index()
+        if mean2.empty:
+            print("file2 の平均用データが空です。file1 だけを描画します。")
+            has_second = False
+        else:
+            t2_mean = mean2["step"].to_numpy() * dt
+            J2_mean = mean2["J"].to_numpy()
+            C2_mean = mean2["true_crop_sum"].to_numpy()
 
     color1 = "tab:blue"
     color2 = "tab:red"
@@ -103,26 +156,55 @@ def plot_two_results_files(
         label=f"{label1} 平均",
     )
 
-    # file2: 各 run
-    for i, r in enumerate(runs2):
-        sub = df2[df2["run"] == r].sort_values("step")
-        if sub.empty:
-            continue
-        t = sub["step"].to_numpy() * dt
-        J = sub["J"].to_numpy()
-        lab = f"{label2} 各試行" if i == 0 else None
-        ax.plot(t, J, color=color2, alpha=0.3, label=lab)
+    # file2 がある場合だけ 2条件目を描く
+    if has_second:
+        runs2 = sorted(df2["run"].unique())
+        for i, r in enumerate(runs2):
+            sub = df2[df2["run"] == r].sort_values("step")
+            if sub.empty:
+                continue
+            t = sub["step"].to_numpy() * dt
+            J = sub["J"].to_numpy()
+            lab = f"{label2} 各試行" if i == 0 else None
+            ax.plot(t, J, color=color2, alpha=0.3, label=lab)
 
-    # file2: 平均
-    ax.plot(
-        t2_mean, J2_mean,
-        color=color2, linewidth=3.0,
-        label=f"{label2} 平均",
-    )
+        ax.plot(
+            t2_mean, J2_mean,
+            color=color2, linewidth=3.0,
+            label=f"{label2} 平均",
+        )
 
-    ax.set_xlabel(f"時間 (step×{dt:.2f}s)")
+    # ── 理論直線（file1 のパラメータから N_uav を取る） ──────────────
+    if gamma is not None:
+        t_common = t1_mean
+        J0 = J1_mean[0]
+
+        # file1 に対応する params から UAV 台数を読む
+        param_path = _infer_param_file(file1)
+        if param_path is not None:
+            N = _load_num_uavs_from_param(param_path)
+        else:
+            N = None
+
+        if N is None:
+            N = 1
+            print(f"[WARN] {file1}: num_uavs が取得できなかったので N=1 とみなして理論線を描画します。")
+
+        # 理論線: J_ideal(t) = J0 - N * gamma * t
+        J_ideal = J0 - N * gamma * t_common
+
+        ax.plot(
+            t_common, J_ideal,
+            "k--", linewidth=2.5,
+            label=rf"理論直線 $J_0 - N_{{\rm UAV}}\gamma t$ (N={N}, $\gamma={gamma:.2f}$)"
+        )
+
+    ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
     ax.set_ylabel("目的関数 $J$")
-    ax.set_title("Objective $J$ の推移（2条件比較）")
+    if has_second:
+        ax.set_title("Objective $J$ の推移（2条件比較）")
+    else:
+        ax.set_title(f"Objective $J$ の推移（{label1}）")
     ax.grid(True)
     ax.legend()
     plt.tight_layout()
@@ -150,26 +232,29 @@ def plot_two_results_files(
         label=f"{label1} 平均",
     )
 
-    # file2: 各 run
-    for i, r in enumerate(runs2):
-        sub = df2[df2["run"] == r].sort_values("step")
-        if sub.empty:
-            continue
-        t = sub["step"].to_numpy() * dt
-        C = sub["true_crop_sum"].to_numpy()
-        lab = f"{label2} 各試行" if i == 0 else None
-        ax.plot(t, C, color=color2, alpha=0.3, label=lab)
+    # file2 がある場合だけ 2条件目
+    if has_second:
+        for i, r in enumerate(runs2):
+            sub = df2[df2["run"] == r].sort_values("step")
+            if sub.empty:
+                continue
+            t = sub["step"].to_numpy() * dt
+            C = sub["true_crop_sum"].to_numpy()
+            lab = f"{label2} 各試行" if i == 0 else None
+            ax.plot(t, C, color=color2, alpha=0.3, label=lab)
 
-    # file2: 平均
-    ax.plot(
-        t2_mean, C2_mean,
-        color=color2, linewidth=3.0,
-        label=f"{label2} 平均",
-    )
+        ax.plot(
+            t2_mean, C2_mean,
+            color=color2, linewidth=3.0,
+            label=f"{label2} 平均",
+        )
 
-    ax.set_xlabel(f"時間 (step×{dt:.2f}s)")
+    ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
     ax.set_ylabel("累積真値の合計")
-    ax.set_title("UGV 訪問セルの累積真値（2条件比較）")
+    if has_second:
+        ax.set_title("UGV 訪問セルの累積真値（2条件比較）")
+    else:
+        ax.set_title(f"UGV 訪問セルの累積真値（{label1}）")
     ax.grid(True)
     ax.legend()
     plt.tight_layout()
@@ -177,7 +262,17 @@ def plot_two_results_files(
 
 
 if __name__ == "__main__":
-    # 実際のファイル名に合わせて書き換え
+    # # ① 単独ファイルで使うとき
+    # file_single = "test_results_3runs.csv"
+    # plot_two_results_files(
+    #     file_single,
+    #     file2=None,                # ← 単独モード
+    #     label1="条件",
+    #     dt=0.1,
+    #     gamma=3.0,
+    # )
+
+    # ② 2条件比較で使うときの例
     file_A = "multi_uav_multi_ugv_suenaga_results_10runs.csv"
     file_B = "multi_uav_multi_ugv_results_10runs.csv"
 
@@ -187,4 +282,5 @@ if __name__ == "__main__":
         label1="条件A",
         label2="条件B",
         dt=0.1,
+        gamma=3.0
     )
