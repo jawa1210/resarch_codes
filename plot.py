@@ -13,7 +13,7 @@ mpl.rcParams['axes.titlesize']     = 20
 mpl.rcParams['axes.labelsize']     = 20
 mpl.rcParams['legend.fontsize']    = 16
 mpl.rcParams['xtick.labelsize']    = 16
-mpl.rcParams['ytick.labelsize']    = 16
+mpl.rcParams['ytick.labelsize']    = 16r
 
 def plot_files(file_list, gamma=3.0):
     data = []
@@ -49,6 +49,7 @@ def plot_files(file_list, gamma=3.0):
     ax.set_title('UGV 訪問セルの累積真値')
     ax.legend()
     ax.grid(True)
+    plt.ylim(0,)
     plt.tight_layout()
     plt.show()
 
