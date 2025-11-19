@@ -923,7 +923,7 @@ class UAVController:
                 ugv_future_pos = np.array([ugv_target_cell[0], ugv_target_cell[1]], dtype=float)
                 d0=self.d0
                 ell=self.ugv_future_path_sigma
-                waypoint=self.path_generation_for_high_variance_point_including_effect_of_ugv(V_map, ugv_future_pos, d0, ell, use_voronoi)
+                waypoint=self.path_generation_for_high_variance_point_including_effect_of_ugv(var_map=V_map, ugv_future_point=ugv_future_pos, d0=d0, ell=ell, use_voronoi=use_voronoi)
                 self.current_waypoint = waypoint
                 v_nom = - self.k_pp * (self.pos - waypoint)
                 #nu_nom = (v_nom - self.v) / self.control_period
@@ -933,7 +933,7 @@ class UAVController:
                 u = self.solver.solve(v_nom)
 
             # --- 5) 状態更新 ---
-            self.v += u * self.control_period
+            self.v = u
             if np.linalg.norm(self.v) >= v_limit:
                 self.v = v_limit * self.v / np.linalg.norm(self.v)
             self.pos += self.v * self.control_period
