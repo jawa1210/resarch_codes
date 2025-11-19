@@ -1020,11 +1020,11 @@ def main(visualize: bool = True):
     step_of_ugv_path_used = 6
     suenaga_on = False
     suenaga_discount_rate=0.95
-    suenaga_path_gene_rate=5
+    suenaga_path_gene_rate=5 #predict 5 steps
     use_j_gradient_cbf = False
     ugv_future_path_sigma=5.0
-    unom_gain=2.0
-    suenaga_gain=2.0
+    unom_gain=0.2
+    suenaga_gain=0.5
     cbf_j_alpha=1.0
     cbf_j_gamma=3.0
 
