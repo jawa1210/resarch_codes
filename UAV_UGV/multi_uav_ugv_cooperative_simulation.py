@@ -53,13 +53,13 @@ class solver():
             G[i, 0] = -gx
             G[i, 1] = -gy
             G[i, 2 + i] = slack_coef   # スラック変数 s_i の係数
-            h[i,0] = bJ
+            h[i, 0] = bJ
 
         P = np.zeros((dim, dim))
-        P[0, 0] = 2*self.P_co
-        P[1, 1] = 2*self.P_co
+        P[0, 0] = 2 * self.P_co
+        P[1, 1] = 2 * self.P_co
         for i in range(m):
-            P[2+i, 2+i] = 2*1  # self.gad_co
+            P[2 + i, 2 + i] = 2 * 1  # self.gad_co
 
         q = np.zeros(dim)
         q[0:2] = -2 * nominal_input
@@ -78,7 +78,7 @@ class solver():
 
 
 def rbf_kernel(x, y, rbf_sigma=2.0):
-    return np.exp(-np.linalg.norm(x-y)**2/(2*rbf_sigma**2))
+    return np.exp(-np.linalg.norm(x - y) ** 2 / (2 * rbf_sigma ** 2))
 
 
 class SparseOnlineGP:
@@ -98,21 +98,26 @@ class SparseOnlineGP:
 
     def init_first(self, x, y):
         k00 = self.kernel(x, x)
-        denom = k00 + self.sigma0**2
+        denom = k00 + self.sigma0 ** 2
         self.X = x.reshape(1, 2)
-        self.a = np.array([y/denom])
-        self.C = np.array([[-1.0/denom]])
-        self.Q = np.array([[1.0/k00]])
+        self.a = np.array([y / denom])
+        self.C = np.array([[-1.0 / denom]])
+        self.Q = np.array([[1.0 / k00]])
 
     def update(self, x: np.ndarray, y: float):
         # ―― 1) 事前予測 f*, var_* ――
+        if self.X.shape[0] == 0:
+            # 基底なしの場合は init_first にフォールバック
+            self.init_first(x, y)
+            return
+
         k_vec = np.array([self.kernel(xi, x) for xi in self.X])  # (N,)
         k_tt = self.kernel(x, x)
         f_star = float(self.a.dot(k_vec))
         var_star = float(k_tt + k_vec.dot(self.C.dot(k_vec)))
 
         # ―― 2) q_t, r_t の計算 (Eq.2.20–2.21) ――
-        denom = var_star + self.sigma0**2
+        denom = var_star + self.sigma0 ** 2
         q_t = (y - f_star) / denom
         r_t = -1.0 / denom
 
@@ -121,15 +126,15 @@ class SparseOnlineGP:
 
         n = self.X.shape[0]
 
-        if h_t < self.delta: # 基底数が上限到達 → h_t でさらに分岐
-                # --- ケース２: discard branch (2.24) だけ更新 ---
-                ehat = self.Q.dot(k_vec)
-                s_short = self.C.dot(k_vec) + ehat     # Eq.(2.24)
-                self.a += q_t * s_short
-                self.C += r_t * np.outer(s_short, s_short)
-                # self.Q, self.X はそのまま
-                self.count_case2 += 1
-                print(f"[SOGP] ケース2 更新(似た情報なので上書き！)：既存基底を更新のみ (h_t={h_t:.4f} < δ={self.delta})")
+        if h_t < self.delta:  # 基底数が上限到達 → h_t でさらに分岐
+            # --- ケース２: discard branch (2.24) だけ更新 ---
+            ehat = self.Q.dot(k_vec)
+            s_short = self.C.dot(k_vec) + ehat     # Eq.(2.24)
+            self.a += q_t * s_short
+            self.C += r_t * np.outer(s_short, s_short)
+            # self.Q, self.X はそのまま
+            self.count_case2 += 1
+            print(f"[SOGP] ケース2 更新(似た情報なので上書き！)：既存基底を更新のみ (h_t={h_t:.4f} < δ={self.delta})")
 
         # --- 【ケース１】基底数に余裕あり → 常に拡張 branch (2.17) ---
         else:
@@ -144,14 +149,14 @@ class SparseOnlineGP:
                 # Q の拡張（2.23）
                 ehat = self.Q.dot(k_vec)
                 ehat_full = np.concatenate([ehat, [0.0]])
-                efull = np.zeros(n+1)
+                efull = np.zeros(n + 1)
                 efull[-1] = 1.0
                 Q_ext = np.pad(self.Q, ((0, 1), (0, 1)), 'constant')
-                self.Q = Q_ext + (1.0/h_t)*np.outer(ehat_full-efull, ehat_full-efull)
+                self.Q = Q_ext + (1.0 / h_t) * np.outer(ehat_full - efull, ehat_full - efull)
                 # X に追加
                 self.X = np.vstack([self.X, x])
                 self.count_case1 += 1
-                print(f"[SOGP] ケース1 拡張(新しい情報がきた！)：新しい基底を追加 (現在 {self.X.shape[0]+1} 基底)")
+                print(f"[SOGP] ケース1 拡張(新しい情報がきた！)：新しい基底を追加 (現在 {self.X.shape[0]} 基底)")
 
             else:
                 # --- ケース３: 拡張 branch + prune (2.17→2.26) ---
@@ -164,10 +169,10 @@ class SparseOnlineGP:
                 # Q も拡張
                 ehat = self.Q.dot(k_vec)
                 ehat_full = np.concatenate([ehat, [0.0]])
-                efull = np.zeros(n+1)
+                efull = np.zeros(n + 1)
                 efull[-1] = 1.0
                 Q_ext = np.pad(self.Q, ((0, 1), (0, 1)), 'constant')
-                self.Q = Q_ext + (1.0/h_t)*np.outer(ehat_full-efull, ehat_full-efull)
+                self.Q = Q_ext + (1.0 / h_t) * np.outer(ehat_full - efull, ehat_full - efull)
                 self.X = np.vstack([self.X, x])
 
                 # (2.26) による prune
@@ -201,7 +206,7 @@ class SparseOnlineGP:
 
         # 5) prune 更新
         a_hat = a_old - (a_j / Q_jj) * Q_jcol
-        term1 = C_jj*np.outer(Q_jcol, Q_jcol) / (Q_jj**2)
+        term1 = C_jj * np.outer(Q_jcol, Q_jcol) / (Q_jj ** 2)
         term2 = (np.outer(Q_jcol, C_jcol) + np.outer(C_jcol, Q_jcol)) / Q_jj
         C_hat = C_old + term1 - term2
         Q_hat = Q_old - np.outer(Q_jcol, Q_jcol) / Q_jj
@@ -222,11 +227,12 @@ class SparseOnlineGP:
         mu = float(self.a.dot(k_vec))
         var = self.kernel(x, x) + float(k_vec.dot(self.C.dot(k_vec)))
 
-        # # Jaakkola & Jordan のロジスティック近似
-        z = mu / np.sqrt(1.0 + (np.pi/8.0) * var)
-        mu = 1.0 / (1.0 + np.exp(-z))      # 予測確率 ∈ [0,1]
-        # var  = mu * (1.0 - mu)               # Bernoulli 分散 ∈ [0,0.25]
-        return mu, var, k_vec, self.C
+        # Jaakkola & Jordan のロジスティック近似
+        z = mu / np.sqrt(1.0 + (np.pi / 8.0) * var)
+        z = 1.0 / (1.0 + np.exp(-z))      # 予測確率 ∈ [0,1]
+        # var  = mu * (1.0 - mu)          # Bernoulli 分散 ∈ [0,0.25]
+        return mu, var, z, k_vec, self.C
+
 
 # ─── Environment / GT Map ────────────────────────────────────
 
@@ -236,10 +242,9 @@ def environment_function(pos: np.ndarray,
                          noise_std: float = 0.5
                          ) -> List[Tuple[np.ndarray, float]]:
     """
-    pos に最も近い格子点 (i0,j0) を中心に、81点 (中心＋周囲8点) について
-      1) その点を中心とした 9x9 の平均値 val
-      2) val + N(0, noise_std^2) を [0,1] にクリップ
-    を計算し [(位置ベクトル, noisy_value), ...] のリストで返す。
+    pos に最も近い格子点 (i0,j0) を中心に、9点 (中心＋周囲8点) について
+      1) その点を中心とした 3x3 の平均値 val
+      2) val + N(0, noise_std^2) を返す
     """
     i0, j0 = int(round(pos[0])), int(round(pos[1]))
     H, W = true_map.shape
@@ -252,14 +257,12 @@ def environment_function(pos: np.ndarray,
                 continue
 
             # そのセルを中心とした 3x3 の平均
-            imin, imax = max(0, i-1), min(H, i+2)
-            jmin, jmax = max(0, j-1), min(W, j+2)
+            imin, imax = max(0, i - 1), min(H, i + 2)
+            jmin, jmax = max(0, j - 1), min(W, j + 2)
             local_patch = true_map[imin:imax, jmin:jmax]
             val = np.mean(local_patch)
 
-            # ガウスノイズを乗せてクリップ
             noisy = val + np.random.normal(loc=0.0, scale=noise_std)
-            # noisy = float(np.clip(noisy, 0.0, 1.0))
 
             observations.append((np.array([i, j], dtype=float), noisy))
 
@@ -301,6 +304,7 @@ def mask_to_rgba(mask: np.ndarray, color: str, alpha: float = 0.18) -> np.ndarra
     rgba[mask] = [r, g, b, alpha]
     return rgba
 
+
 def compute_voronoi_masks(positions: list[np.ndarray], H: int, W: int) -> list[np.ndarray]:
     """
     positions: 各UAVの現在位置 [ [y,x], ... ]（float可）
@@ -338,9 +342,9 @@ def compute_voronoi_masks(positions: list[np.ndarray], H: int, W: int) -> list[n
 class FieldLimitation:
     def __init__(self, pos, alpha, grid_size: int):
         self.field_x_min = 0
-        self.field_x_max = grid_size-1
+        self.field_x_max = grid_size - 1
         self.field_y_min = 0
-        self.field_y_max = grid_size-1
+        self.field_y_max = grid_size - 1
         self.pos = pos
         self.alpha = alpha
         x_cen = (self.field_x_min + self.field_x_max) / 2
@@ -351,12 +355,13 @@ class FieldLimitation:
         self.radius = np.array([x_radius, y_radius], dtype=float)
 
     def calc_cbf(self):
-        L4_norm = np.power(np.sum(((self.center - self.pos) / self.radius)**4), 1/4)
-        return self.alpha*(1-L4_norm)
+        L4_norm = np.power(np.sum(((self.center - self.pos) / self.radius) ** 4), 1 / 4)
+        return self.alpha * (1 - L4_norm)
 
     def calc_grad(self):
-        grad = 4*((self.center - self.pos)**3)/(self.radius**4)
+        grad = 4 * ((self.center - self.pos) ** 3) / (self.radius ** 4)
         return grad
+
 
 # ─── UGV Controller──────────────────────────────────────────────
 
@@ -386,23 +391,25 @@ class UGVController:
         d = np.linalg.norm(pos - current_pos)
         E = expectation_map[pos[0], pos[1]]
         V = variance_map[pos[0], pos[1]]
+        z = E / math.sqrt(1.0 + (math.pi / 8.0) * V)
+        p = 1.0 / (1.0 + math.exp(-z))  
         if reward_type == 0:
-            return (k1 * E - V) / (d**2 + epsilon)
+            return (k1 * E - V) / (d ** 2 + epsilon)
         elif reward_type == 1:
-            return np.exp(-(d**2)/k4) * np.exp((k2*E - V)/k3)
+            return np.exp(-(d ** 2) / k4) * np.exp((k2 * E - V) / k3)
         elif reward_type == 2:
-            return (np.tanh(k5 * E) - k6*V) / (d**2 + epsilon)
+            return (np.tanh(k5 * E) - k6 * V) / (d ** 2 + epsilon)
         elif reward_type == 3:
             delta = 0.1
-            beta = 2 * np.log((np.pi**2) * (step**2) / (6 * delta))
+            beta = 2 * np.log((np.pi ** 2) * (step ** 2) / (6 * delta))
             return E - np.sqrt(beta * V)
         else:
             return 0.0
 
     def _recursive_search(self, pos: np.ndarray,
-                        expectation_map: np.ndarray, variance_map: np.ndarray,
-                        depth: int, visited: np.ndarray, step: int,
-                        allowed_mask: np.ndarray | None = None) -> Tuple[np.ndarray, float]:
+                          expectation_map: np.ndarray, variance_map: np.ndarray,
+                          depth: int, visited: np.ndarray, step: int,
+                          allowed_mask: np.ndarray | None = None) -> Tuple[np.ndarray, float]:
         actions = np.array([[-1, 0], [1, 0], [0, -1], [0, 1]])
         k1, k2, k3, k4, k5, k6, epsilon = 2, 2, 0.1, 0.1, 1, 1, 1e-3
         best_reward = -np.inf
@@ -435,7 +442,7 @@ class UGVController:
             if depth > 1:
                 _, fut = self._recursive_search(
                     nxt, expectation_map, variance_map,
-                    depth-1, new_visited, step+1, allowed_mask=allowed_mask
+                    depth - 1, new_visited, step + 1, allowed_mask=allowed_mask
                 )
                 total += self.discount_factor * fut
 
@@ -444,9 +451,8 @@ class UGVController:
                 best_move = nxt.copy()
         return best_move, best_reward
 
-    # 置換: UGVController.calc に allowed_mask を追加
     def calc(self, expectation_map: np.ndarray, variance_map: np.ndarray,
-            depth: int = 10, step: int = 1, allowed_mask: np.ndarray | None = None):
+             depth: int = 10, step: int = 1, allowed_mask: np.ndarray | None = None):
         new_pos, _ = self._recursive_search(
             self.position, expectation_map, variance_map,
             depth, self.visited.copy(), step, allowed_mask=allowed_mask
@@ -455,9 +461,8 @@ class UGVController:
             self.position = new_pos
             self.visited[new_pos[0], new_pos[1]] = True
 
-    # 置換: UGVController.get_planned_path に allowed_mask を追加
     def get_planned_path(self, expectation_map: np.ndarray, variance_map: np.ndarray,
-                        depth: int = 10, allowed_mask: np.ndarray | None = None) -> List[np.ndarray]:
+                         depth: int = 10, allowed_mask: np.ndarray | None = None) -> List[np.ndarray]:
         path = []
         pos = self.position.copy()
         visited = self.visited.copy()
@@ -469,12 +474,10 @@ class UGVController:
             return bool(allowed_mask[i, j])
 
         for t in range(depth):
-            # allowed_mask を使って1手先を探索
             nxt, _ = self._recursive_search(
                 pos, expectation_map, variance_map,
-                depth-t, visited, t+1, allowed_mask=allowed_mask
+                depth - t, visited, t + 1, allowed_mask=allowed_mask
             )
-            # 念のため許可外に出そうなら据え置き
             if not is_allowed(nxt):
                 nxt = pos.copy()
 
@@ -482,6 +485,7 @@ class UGVController:
             visited[nxt[0], nxt[1]] = True
             pos = nxt
         return path
+
 
 # 追加: UGVFleet クラス
 class UGVFleet:
@@ -514,45 +518,174 @@ class UGVFleet:
 
     def target_cell_for_uav(self, uav_pos: np.ndarray, step_offset: int) -> tuple[int, int]:
         """
-        UAVの位置が属するUGV Voronoi を調べ、そのUGVの計画パスの step_offset の点を返す。
-        無ければ最近傍UGVを使う。
+        UGVボロノイを使わずに、各UGVの「step_offset 手先」のセルのうち
+        UAVに最も近いものを選ぶ。
+        （CBF用の元のロジックを壊さないために残してある）
         """
-        # 所属判定
-        for mask, path in zip(self.voronoi_masks, self.planned_paths):
-            i, j = int(round(uav_pos[0])), int(round(uav_pos[1]))
-            H, W = mask.shape
-            if 0 <= i < H and 0 <= j < W and mask[i, j]:
-                idx = min(max(step_offset - 1, 0), len(path) - 1) if path else 0
-                cell = path[idx] if path else self.ugvs[0].position
-                return int(cell[0]), int(cell[1])
+        best_cell = None
+        best_dist = np.inf
 
-        # 最近傍UGVにフォールバック
-        dists = [np.linalg.norm(uav_pos - u.position) for u in self.ugvs]
-        k = int(np.argmin(dists))
-        path = self.planned_paths[k] if k < len(self.planned_paths) else []
-        idx = min(max(step_offset - 1, 0), len(path) - 1) if path else 0
-        cell = path[idx] if path else self.ugvs[k].position
-        return int(cell[0]), int(cell[1])
+        for k, ugv in enumerate(self.ugvs):
+            path = self.planned_paths[k] if k < len(self.planned_paths) else []
+            if path:
+                idx = min(max(step_offset - 1, 0), len(path) - 1)
+                cy, cx = path[idx]
+            else:
+                cy, cx = ugv.position
+            cell = np.array([cy, cx], dtype=float)
+            d = np.linalg.norm(uav_pos - cell)
+            if d < best_dist:
+                best_dist = d
+                best_cell = cell
 
+        if best_cell is None:
+            # フォールバック
+            for ugv in self.ugvs:
+                cell = ugv.position.astype(float)
+                d = np.linalg.norm(uav_pos - cell)
+                if d < best_dist:
+                    best_dist = d
+                    best_cell = cell
 
+        return int(best_cell[0]), int(best_cell[1])
+
+    def build_path_weight_map(self, H: int, W: int,
+                              ell: float,
+                              step_offset: int) -> np.ndarray:
+        """
+        各UGVの「step_offset手先」のセルを中心として
+        exp(-dist^2/(2*ell^2)) を足し合わせた重みマップ w(q) を返す。
+        （全UGVのpathの影響をまとめる）
+        """
+        I, J = np.indices((H, W))
+        weight = np.zeros((H, W), dtype=float)
+
+        for k, ugv in enumerate(self.ugvs):
+            path = self.planned_paths[k] if k < len(self.planned_paths) else []
+            if path:
+                idx = min(max(step_offset - 1, 0), len(path) - 1)
+                cy, cx = path[idx]
+            else:
+                cy, cx = ugv.position
+
+            dist2 = (I - float(cy)) ** 2 + (J - float(cx)) ** 2
+            weight += np.exp(-dist2 / (2.0 * ell ** 2))
+
+        max_w = weight.max()
+        if max_w > 1e-8:
+            weight /= max_w
+
+        return weight
+
+    def build_direction_weight_map(
+            self,
+            H: int,
+            W: int,
+            num_steps: int = 10,      # planned_pathsの先頭から何ステップ使うか
+            ell_u: float = 8.0,       # UGVからの距離減衰（大きいほど遠くまで影響）
+            ell_perp: float = 4.0,    # レーン幅（小さいほど進行方向の帯が細い）
+            eta_forward: float = 2.0, # 前方強調（大きいほど前を強く見る）
+            forward_shift: float = 0.0,
+            eps: float = 1e-9,
+            mode: str = "max",        # "max" 推奨（UGVのどれかが強ければそこが強い）
+            normalize: bool = True,
+        ) -> np.ndarray:
+            """
+            各UGVの planned_paths から進行方向ベクトルを取り、
+            前方レーン重み W_k(q) を作って全UGVで合成した W_all(q) を返す。
+            """
+            I, J = np.indices((H, W))
+            W_all = np.zeros((H, W), dtype=float)
+
+            # planned_paths が無い/未更新の保険（等方ガウスで代用）
+            if not self.planned_paths or len(self.planned_paths) != len(self.ugvs):
+                for ugv in self.ugvs:
+                    p0 = ugv.position.astype(float)
+                    r0 = I - p0[0]
+                    r1 = J - p0[1]
+                    dist2 = r0**2 + r1**2
+                    Wk = np.exp(-dist2 / (2.0 * ell_u**2))
+                    W_all = np.maximum(W_all, Wk) if mode == "max" else (W_all + Wk)
+                if normalize and W_all.max() > 1e-9:
+                    W_all /= W_all.max()
+                return W_all
+
+            # planned_paths がある通常ケース
+            for k, ugv in enumerate(self.ugvs):
+                path = self.planned_paths[k] if k < len(self.planned_paths) else []
+                if not path:
+                    p0 = ugv.position.astype(float)
+                    pN = p0.copy()
+                else:
+                    K = min(num_steps, len(path))
+                    p0 = np.array(path[0], dtype=float)
+                    pN = np.array(path[K - 1], dtype=float)
+
+                dvec = pN - p0
+                dn = float(np.linalg.norm(dvec))
+
+                # r = q - p0
+                r0 = (I - p0[0])
+                r1 = (J - p0[1])
+
+                if dn < eps:
+                    # 方向が定義できない（停止など）→ 等方
+                    dist2 = r0**2 + r1**2
+                    Wk = np.exp(-dist2 / (2.0 * ell_u**2))
+                else:
+                    d_hat = dvec / (dn + eps)
+
+                    # 前方成分 s = d_hat^T r
+                    s = d_hat[0] * r0 + d_hat[1] * r1
+
+                    # 後ろは0、前方は増える
+                    forward = np.maximum(0.0, s - forward_shift)
+                    forward_norm = forward / (dn + eps)
+                    w_forward = forward_norm ** eta_forward
+
+                    # レーン（直交距離）
+                    rperp0 = r0 - s * d_hat[0]
+                    rperp1 = r1 - s * d_hat[1]
+                    dperp2 = rperp0**2 + rperp1**2
+                    w_lane = np.exp(-dperp2 / (2.0 * ell_perp**2))
+
+                    # 遠すぎ抑制（p0からの距離）
+                    dist2 = r0**2 + r1**2
+                    w_dist = np.exp(-dist2 / (2.0 * ell_u**2))
+
+                    Wk = w_forward * w_lane * w_dist
+
+                if mode == "max":
+                    W_all = np.maximum(W_all, Wk)
+                else:
+                    W_all += Wk
+
+            if normalize and W_all.max() > 1e-9:
+                W_all /= W_all.max()
+
+            return W_all
 
 # ─── UAV Controller ──────────────────────────────────────────
 
 
 class UAVController:
     def __init__(self, train_data_x, train_data_y: np.ndarray, grid_size,
-                 ugv_fleet: "UGVFleet", step_of_ugv_path_used=8, ugv_future_path_sigma=5.0, suenaga=False, use_j_gradient_cbf=True, use_voronoi=True,
+                 ugv_fleet: "UGVFleet", step_of_ugv_path_used=8, ugv_future_path_sigma=5.0, suenaga=False, use_j_gradient_cbf=True, use_voronoi=True, use_common_ugv_weighted_map: bool = False,
                  map_publish_period: float = 0.5, d0=1, suenaga_discount_rate=0.95, suenaga_path_gene_depth=5, unom_gain=2.0, suenaga_gain=2.0, cbf_j_alpha=1.0, cbf_j_gamma=3.0, shared_gp: SparseOnlineGP | None = None, uav_id=0, gp_sensing_noise_sigma0=0.4, gp_max_basis=27, gp_threshold_delta=0.1, rbf_sigma=2.0):
-        ...
         self.r = 1.0
         self.alpha = cbf_j_alpha
         self.gamma = cbf_j_gamma
         self.k = unom_gain  # unomのゲイン
-        self.k_pp= suenaga_gain  # suenagaのゲイン
+        self.k_pp = suenaga_gain  # suenagaのゲイン
         self.pos = train_data_x[0].copy()  # ← floatで初期化
         self.control_period = 0.1
-        self.gp = shared_gp if shared_gp is not None else SparseOnlineGP(sigma0=gp_sensing_noise_sigma0, kernel=lambda x,y,s=rbf_sigma: rbf_kernel(x,y,s), max_basis=gp_max_basis, delta=gp_threshold_delta)
-        self.uav_id=uav_id
+        self.gp = shared_gp if shared_gp is not None else SparseOnlineGP(
+            sigma0=gp_sensing_noise_sigma0,
+            kernel=lambda x, y, s=rbf_sigma: rbf_kernel(x, y, s),
+            max_basis=gp_max_basis,
+            delta=gp_threshold_delta
+        )
+        self.uav_id = uav_id
         self.grid_size = grid_size
         self.v = np.zeros(2)
         self.step_of_ugv_path_used = step_of_ugv_path_used
@@ -560,18 +693,20 @@ class UAVController:
         self.use_voronoi = use_voronoi
         self.map_publish_period = map_publish_period
         self.ugv_fleet = ugv_fleet
-        self.rbf_sigma=rbf_sigma
-        self.use_j_gradient_cbf=use_j_gradient_cbf
-        self.d0=d0
-        self.suenega_discount_rate=suenaga_discount_rate
-        self.suenega_path_gene_depth=suenaga_path_gene_depth
-        self.ugv_future_path_sigma=ugv_future_path_sigma
+        self.rbf_sigma = rbf_sigma
+        self.use_j_gradient_cbf = use_j_gradient_cbf
+        self.d0 = d0
+        self.suenega_discount_rate = suenaga_discount_rate
+        self.suenega_path_gene_depth = suenaga_path_gene_depth
+        self.ugv_future_path_sigma = ugv_future_path_sigma
+        self.use_common_ugv_weighted_map = use_common_ugv_weighted_map
 
         for x, y in zip(train_data_x, train_data_y):
             self.gp.update(x, y)
 
         self._publish_counter = 0.0
         self._cached_mean_map, self._cached_var_map = self.get_map_estimates()
+        self.ugv_weighted_var_map: np.ndarray | None = None
 
     def update_maps_for_ugv(self):
         """0.5s ごとにだけ全域推定を再計算してキャッシュを更新"""
@@ -592,8 +727,6 @@ class UAVController:
         for p_i, y_i in obs_list:
             self.gp.update(p_i, y_i)
 
-        # 中心点の観測値だけ取り出して表示
-        # self.pos に最も近い p_i を探す
         center_y = None
         for p_i, y_i in obs_list:
             if np.allclose(p_i, self.pos, atol=1e-6):
@@ -603,20 +736,19 @@ class UAVController:
         if center_y is not None:
             print(f"New batch observations, center noisy = {center_y:.3f}")
         else:
-            # もし境界で中心点そのものの観測がないなら
             print(f"New batch observations, center did not exist in obs_list")
 
     def calc_objective_function(self):
         J = np.sum(self.sigma2)
         self.objective_function = J
 
-    def calc_cbf_terms(self, u: np.ndarray, gamma=3.0, alpha=1.0) -> Tuple[float, np.ndarray, float]:
+    def calc_cbf_terms(self, u: np.ndarray, gamma=3.0, alpha=1.0) -> Tuple[np.ndarray, float]:
         """
         bJ = J - γ
         ξ_J1 = ∇_p J
         ξ_J2 = 厳密な式 (A.8) に基づく 2階項
         """
-        r2 = self.rbf_sigma**2  # rbfカーネルのパラメータと揃える
+        r2 = self.rbf_sigma ** 2
         ns = len(self.gp.X)
         xi_J1 = np.zeros(2)
         xi_J2 = 0.0
@@ -624,12 +756,12 @@ class UAVController:
 
         for l in range(ns):
             x_l = self.gp.X[l]
-            k_vec_l = np.array([self.gp.kernel(xj, x_l) for xj in self.gp.X])  # (ns,)
-            z_l = self.gp.Q @ k_vec_l                                     # (ns,)
-            z_l_ns = z_l[-1]  # 自分自身
+            k_vec_l = np.array([self.gp.kernel(xj, x_l) for xj in self.gp.X])
+            z_l = self.gp.Q @ k_vec_l
+            z_l_ns = z_l[-1]
             k_lp = self.gp.kernel(x_l, p)
 
-            # --- ξ_J1項 ---
+            # ξ_J1
             grad_k_lp = (k_lp / r2) * (p - x_l)
             grad_k_sum = np.zeros(2)
             for j in range(ns - 1):
@@ -639,28 +771,23 @@ class UAVController:
                 grad_k_sum += z_l[j] * grad_k_jp
             xi_J1 += z_l_ns * (grad_k_lp + grad_k_sum)
 
-            # --- ξ_J2項の第一括弧 ---
+            # ξ_J2
             norm_u2 = np.dot(u, u)
             delta_lp = (x_l - p) / r2
             inner_lp = np.dot(delta_lp, u)
-            term1 = -norm_u2 / r2 + inner_lp**2
+            term1 = -norm_u2 / r2 + inner_lp ** 2
             term1 *= 2 * z_l_ns * k_lp
 
-            # --- dot_k_l ∈ R^{ns} 各基底点 j に対する ∇_p k(x_j, p) ⋅ u ---
             dot_k_l = np.array([
                 np.dot((self.gp.kernel(self.gp.X[j], p) / r2) * (p - self.gp.X[j]), u)
                 for j in range(ns)
-            ])  # shape = (ns,)
+            ])
 
-            # --- dot_K_ns ∈ R^{ns×ns}：各行 j に ∇_p k(x_j, p) ⋅ u を並べる ---
             dot_K = np.zeros((ns, ns))
-
-            # 最下行（ロボット位置 → 各観測点）: ∂k(p, x_j)/∂p ⋅ u
             for k in range(ns - 1):
                 grad = (self.gp.kernel(p, self.gp.X[k]) / r2) * (p - self.gp.X[k])
                 dot_K[-1, k] = np.dot(grad, u)
 
-            # 最右列（各観測点 → ロボット位置）: ∂k(x_j, p)/∂p ⋅ u
             for j in range(ns - 1):
                 grad = (self.gp.kernel(self.gp.X[j], p) / r2) * (p - self.gp.X[j])
                 dot_K[j, -1] = np.dot(grad, u)
@@ -669,20 +796,18 @@ class UAVController:
             term3 = 2 * dot_k_l.T @ self.gp.Q @ dot_k_l
             term4 = 2 * z_l.T @ dot_K @ self.gp.Q @ dot_K @ z_l
 
-            # --- ξ_J2項のクロス項（最後の和） ---
             cross_term = 0.0
             for j in range(ns - 1):
                 x_j = self.gp.X[j]
                 k_jp = self.gp.kernel(x_j, p)
                 delta_jp = (x_j - p) / r2
                 inner_jp = np.dot(delta_jp, u)
-                scalar = -norm_u2 / r2 + inner_jp**2
+                scalar = -norm_u2 / r2 + inner_jp ** 2
                 cross_term += z_l[j] * k_jp * scalar
             term5 = -2 * z_l_ns * cross_term
 
             xi_J2 += -(term1 + term2 + term3 + term4 + term5)
 
-        # bJ = self.objective_function - gamma
         xi_J2 += alpha * (np.dot(xi_J1, u) + gamma)
 
         return xi_J1, xi_J2
@@ -698,7 +823,7 @@ class UAVController:
         for i in range(H):
             for j in range(W):
                 x = np.array([i, j], dtype=float)
-                mean, var, _, _ = self.gp.predict(x)
+                mean, var, _, _, _ = self.gp.predict(x)
                 mean_map[i, j] = mean
                 var_map[i, j] = var
 
@@ -709,11 +834,13 @@ class UAVController:
 
         if use_voronoi and hasattr(self, "_voronoi_mask") and self._voronoi_mask is not None:
             allowed = np.argwhere(self._voronoi_mask)
-            cells = [tuple(x) for x in allowed]                 # ★ マスク内セルだけ
+            cells = [tuple(x) for x in allowed]
             allowed_set = set(cells)
+
             def in_allowed(c): return c in allowed_set
         else:
             cells = [(i, j) for i in range(H) for j in range(W)]
+
             def in_allowed(c): return True
 
         V_prev = {c: 0.0 for c in cells}
@@ -722,22 +849,20 @@ class UAVController:
         def neighbors(c):
             i, j = c
             nbrs = []
-            for di, dj in [(-1,0),(1,0),(0,-1),(0,1)]:
-                ni, nj = i+di, j+dj
+            for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                ni, nj = i + di, j + dj
                 if 0 <= ni < H and 0 <= nj < W:
                     c2 = (ni, nj)
-                    # ★ 遷移先も allowed に限定
                     if in_allowed(c2):
                         nbrs.append(c2)
             return nbrs
 
-        # 価値反復は現状どおり…
         for _ in range(depth):
             V_cur = {}
             for c in cells:
                 best, best_n = -1e9, c
                 for c2 in neighbors(c):
-                    dist = np.hypot(c[0]-c2[0], c[1]-c2[1])
+                    dist = np.hypot(c[0] - c2[0], c[1] - c2[1])
                     if dist < 1e-6:
                         continue
                     R = var_map[c2] / dist
@@ -748,17 +873,12 @@ class UAVController:
                 policy[c] = best_n
             V_prev = V_cur
 
-        # ★ 現在セルが allowed 外なら最寄り allowed へ射影してから方策適用
         ci = (int(round(self.pos[0])), int(round(self.pos[1])))
         if not in_allowed(ci):
-            # 最寄り allowed cell を1つ探す
             if use_voronoi and len(cells) > 0:
                 arr = np.array(cells)
-                d = np.hypot(arr[:,0]-ci[0], arr[:,1]-ci[1])
+                d = np.hypot(arr[:, 0] - ci[0], arr[:, 1] - ci[1])
                 ci = tuple(arr[np.argmin(d)])
-            else:
-                # allowed の定義がない場合はそのまま
-                pass
 
         next_cell = policy.get(ci, ci)
         return np.array([next_cell[0], next_cell[1]], dtype=float)
@@ -767,47 +887,37 @@ class UAVController:
         """
         分散 var_map と現在位置 self.pos から、
         score = variance / distance を最大にするセルそのものを返す版。
-        近傍ステップはせず、グリッド上の best cell をそのまま次の目標にする。
         宮下
         """
         H, W = var_map.shape
 
-        # ---- 現在セル（グリッドインデックス） ----
         ci = np.array([int(round(self.pos[0])), int(round(self.pos[1]))], dtype=int)
         ci[0] = np.clip(ci[0], 0, H - 1)
         ci[1] = np.clip(ci[1], 0, W - 1)
 
-        # ---- Voronoi マスクの処理（担当領域があれば現在位置をスナップ） ----
         allowed_mask = None
         if use_voronoi and hasattr(self, "_voronoi_mask") and self._voronoi_mask is not None:
             allowed_mask = self._voronoi_mask.astype(bool)
 
-            # もし担当領域に1つもセルがない場合 → 動きようがないので今のセルを返す
             if not np.any(allowed_mask):
                 return ci.astype(float)
 
-            # 現在位置が担当外なら、一番近い allowed にスナップ
             if not allowed_mask[ci[0], ci[1]]:
                 idxs = np.argwhere(allowed_mask)
                 d = np.hypot(idxs[:, 0] - ci[0], idxs[:, 1] - ci[1])
                 ci = idxs[np.argmin(d)]
 
-        # ---- 全マスの距離とスコアを計算 ----
-        I, J = np.indices((H, W))                # I[i,j] = i, J[i,j] = j
-        dist = np.hypot(I - ci[0], J - ci[1])    # 各セルまでの距離
+        I, J = np.indices((H, W))
+        dist = np.hypot(I - ci[0], J - ci[1])
 
+        score = var_map / (dist ** 2 + d0 ** 2)
 
-        score = var_map / (dist**2+d0**2)             # 近くて分散が高いほど高スコア
-
-        # ---- Voronoi がある場合は担当領域外のスコアを無効化 ----
         if allowed_mask is not None:
             score[~allowed_mask] = -np.inf
 
-        # ---- スコアが有限なセルがなければ、その場にとどまる ----
         if not np.isfinite(score).any():
             return ci.astype(float)
 
-        # ---- score 最大のセルをそのまま次の目標にする ----
         ti, tj = np.unravel_index(np.nanargmax(score), score.shape)
         next_cell = np.array([ti, tj], dtype=float)
 
@@ -816,89 +926,183 @@ class UAVController:
     def path_generation_for_high_variance_point_including_effect_of_ugv(
         self,
         var_map: np.ndarray,
-        ugv_future_point: np.ndarray,
+        ugv_future_point: np.ndarray | None,
         use_voronoi: bool = True,
         d0: float = 1.0,
         ell: float = 5.0,
     ) -> np.ndarray:
         """
-        J_var_ugv(q) = (sigma(q)^2 / (||p_i - q||^2 + d0^2))
-                        * exp( - ||q - ugv_future_point||^2 / (2 * ell^2) )
-        を最大にするセル q ∈ Voronoi_i を waypoint として返す。
+        ● ugv_future_point is not None:
+            J(q) = (σ^2(q) / (dist_uav^2 + d0^2)) * exp(-dist_ugv^2 / (2ℓ^2))
 
-        ※ 数式では argmin と書いていたが、上式は「大きいほど好ましいセル」
-           なので実装は argmax にしている。argmin にしたい場合は -J を使えばよい。
+        ● ugv_future_point is None:
+            var_map はすでに「全UGVパスの重みを掛けた共通分散」とみなして、
+            J(q) = var_map(q) / (dist_uav^2 + d0^2)
+            を最大にするセルを選ぶ。
         """
         H, W = var_map.shape
 
-        # ---- 現在セル（グリッドインデックス） ----
         ci = np.array([int(round(self.pos[0])), int(round(self.pos[1]))], dtype=int)
         ci[0] = np.clip(ci[0], 0, H - 1)
         ci[1] = np.clip(ci[1], 0, W - 1)
 
-        # ---- Voronoi マスク（自分の担当領域） ----
         allowed_mask = None
         if use_voronoi and hasattr(self, "_voronoi_mask") and self._voronoi_mask is not None:
             allowed_mask = self._voronoi_mask.astype(bool)
-
-            # 担当領域が 1 つもない場合 → その場に留まる
             if not np.any(allowed_mask):
                 return ci.astype(float)
-
-            # 現在位置が担当外なら、一番近い allowed にスナップ
             if not allowed_mask[ci[0], ci[1]]:
                 idxs = np.argwhere(allowed_mask)
                 d = np.hypot(idxs[:, 0] - ci[0], idxs[:, 1] - ci[1])
                 ci = idxs[np.argmin(d)]
 
-        # ---- 全マスの距離と J_var_ugv_path を計算 ----
-        I, J = np.indices((H, W))  # I[i,j] = i (y), J[i,j] = j (x)
+        I, J = np.indices((H, W))
+        dist2_uav = (I - ci[0]) ** 2 + (J - ci[1]) ** 2
+        denom = dist2_uav + d0 ** 2
 
-        # UAV から各セルまでの距離²
-        dist2_uav = (I - ci[0])**2 + (J - ci[1])**2
-        # 自分自身で 0 割りしないように
-        # （実質、距離0 のときは d0 だけで決まる）
-        # → denominator = dist2_uav + d0^2 なのでこのままでも OK
+        sigma2 = var_map
 
-        # UGV 未来点から各セルまでの距離²
-        ugv_i = float(ugv_future_point[0])
-        ugv_j = float(ugv_future_point[1])
-        dist2_ugv = (I - ugv_i)**2 + (J - ugv_j)**2
+        if ugv_future_point is None:
+            J_var_ugv_path = sigma2 / denom
+        else:
+            ugv_i = float(ugv_future_point[0])
+            ugv_j = float(ugv_future_point[1])
+            dist2_ugv = (I - ugv_i) ** 2 + (J - ugv_j) ** 2
+            J_var_ugv_path = (sigma2 / denom) * np.exp(-dist2_ugv / (2.0 * ell ** 2))
 
-        # J_var_ugv(q) = (sigma^2 / (dist^2 + d0^2)) * exp(-dist_ugv^2 / (2 ell^2))
-        denom = dist2_uav + d0**2
-        sigma2 = var_map  # var_map が σ^2(q)
-        J_var_ugv_path = (sigma2 / denom) * np.exp(-dist2_ugv / (2.0 * ell**2))
-
-        # Voronoi がある場合は担当外を無効化
         if allowed_mask is not None:
             J_var_ugv_path[~allowed_mask] = -np.inf
 
-        # 有効なセルがなければ、その場にとどまる
         if not np.isfinite(J_var_ugv_path).any():
             return ci.astype(float)
 
-        # J_var_ugv 最大のセルを waypoint に
         ti, tj = np.unravel_index(np.nanargmax(J_var_ugv_path), J_var_ugv_path.shape)
         next_cell = np.array([ti, tj], dtype=float)
 
         return next_cell
+    
+    def path_generation_for_high_variance_point_including_effect_of_ugv_direction(
+        self,
+        var_map: np.ndarray,
+        ugv_future_path: np.ndarray | None,   # shape (N,2) in [i,j]
+        use_voronoi: bool = True,
+        d0: float = 1.0,
+        # ---- UGV方向バイアスのパラメータ ----
+        ell_u: float = 8.0,        # UGVからの距離減衰 (大きいほど遠くまで見る)
+        ell_perp: float = 4.0,     # レーン幅 (小さいほどレーンが細い)
+        eta_forward: float = 2.0,  # 前方の強調 (>=1)
+        forward_shift: float = 0.0,# 前方判定のしきい値(>0で少し前だけ)
+        eps: float = 1e-9,
+    ) -> np.ndarray:
+        """
+        waypoint選択スコア例:
+        Score(q) = (sigma2(q)/(dist_uav^2+d0^2)) * W_ugv(q)
 
+        W_ugv(q) は
+        - 前方ほどUP (後ろは0)
+        - UGVから遠すぎると減衰
+        - 進行方向レーンから外れると減衰
+        - UGVの前を強く見させたい場合は eta_forward を大きくする
+        - レーンを細くして「進行方向の帯」だけ見るときはell_perpを小さくする
+        - 遠くまで先読みしたい場合は「ell_u」を大きくする
+        - UGVのすぐ前だけを見たい場合は「forward_shift]を正にする
+        """
+        H, W = var_map.shape
+
+        # --- UAV現在セル ---
+        ci = np.array([int(round(self.pos[0])), int(round(self.pos[1]))], dtype=int)
+        ci[0] = np.clip(ci[0], 0, H - 1)
+        ci[1] = np.clip(ci[1], 0, W - 1)
+
+        # --- Voronoi制限 ---
+        allowed_mask = None
+        if use_voronoi and hasattr(self, "_voronoi_mask") and self._voronoi_mask is not None:
+            allowed_mask = self._voronoi_mask.astype(bool)
+            if not np.any(allowed_mask):
+                return ci.astype(float)
+            if not allowed_mask[ci[0], ci[1]]:
+                idxs = np.argwhere(allowed_mask)
+                d = np.hypot(idxs[:, 0] - ci[0], idxs[:, 1] - ci[1])
+                ci = idxs[np.argmin(d)]
+
+        # --- グリッド全点 ---
+        I, J = np.indices((H, W))
+        dist2_uav = (I - ci[0]) ** 2 + (J - ci[1]) ** 2
+        denom = dist2_uav + d0 ** 2
+
+        sigma2 = var_map
+        base = sigma2 / denom
+
+        # ============================================================
+        # UGV方向バイアス W_ugv(q)
+        # ============================================================
+        if ugv_future_path is None or len(ugv_future_path) < 2:
+            W_ugv = 1.0
+        else:
+            p0 = np.array(ugv_future_path[0], dtype=float)   # [i,j]
+            pN = np.array(ugv_future_path[-1], dtype=float)  # [i,j]
+            dvec = pN - p0
+            dn = np.linalg.norm(dvec)
+            if dn < eps:
+                # 進行方向が定義できない(止まってる等)なら「UGV近傍」だけ軽く見る
+                ugv_i, ugv_j = p0
+                dist2_ugv = (I - ugv_i) ** 2 + (J - ugv_j) ** 2
+                W_ugv = np.exp(-dist2_ugv / (2.0 * ell_u ** 2))
+            else:
+                d_hat = dvec / (dn + eps)  # unit direction in [i,j]
+
+                # 各点 q=[I,J] と UGV基点 p0 の相対ベクトル r=q-p0
+                r0 = (I - p0[0])
+                r1 = (J - p0[1])
+
+                # 前方スカラー s = d_hat^T r
+                s = d_hat[0] * r0 + d_hat[1] * r1
+
+                # 後ろは0、前方は増える（ReLU）
+                forward = np.maximum(0.0, s - forward_shift)
+                # スケールを整える（dn で割って「どれだけ前か」を無次元化）
+                forward_norm = forward / (dn + eps)
+                w_forward = forward_norm ** eta_forward
+
+                # レーン幅: 進行方向直交距離 d_perp をガウスで減衰
+                # r_perp = r - (d_hat^T r) d_hat
+                rperp0 = r0 - s * d_hat[0]
+                rperp1 = r1 - s * d_hat[1]
+                dperp2 = rperp0 ** 2 + rperp1 ** 2
+                w_lane = np.exp(-dperp2 / (2.0 * ell_perp ** 2))
+
+                # UGVからの距離も減衰（遠すぎる前方を抑える）
+                dist2_ugv = r0 ** 2 + r1 ** 2
+                w_dist = np.exp(-dist2_ugv / (2.0 * ell_u ** 2))
+
+                W_ugv = w_forward * w_lane * w_dist
+
+        # --- 最終スコア ---
+        Score = base * W_ugv
+
+        if allowed_mask is not None:
+            Score[~allowed_mask] = -np.inf
+
+        if not np.isfinite(Score).any():
+            return ci.astype(float)
+
+        ti, tj = np.unravel_index(np.nanargmax(Score), Score.shape)
+        return np.array([ti, tj], dtype=float)
 
     def set_voronoi_mask(self, mask: np.ndarray):
         self._voronoi_mask = mask
 
-    def _in_my_voronoi(self, cell: Tuple[int,int]) -> bool:
-            if hasattr(self, "_voronoi_mask") and self._voronoi_mask is not None:
-                i, j = cell
-                return bool(self._voronoi_mask[i, j])
-            return True  # デフォルトはTrue
+    def _in_my_voronoi(self, cell: Tuple[int, int]) -> bool:
+        if hasattr(self, "_voronoi_mask") and self._voronoi_mask is not None:
+            i, j = cell
+            return bool(self._voronoi_mask[i, j])
+        return True  # デフォルトはTrue
 
     def calc(self, environment_function: Callable[[np.ndarray], float], v_limit=1.0):
         # --- 1) 観測 ---
         use_voronoi = self.use_voronoi
         self.update_map(environment_function)
-        self.prob, self.sigma2, self.k_star, self.K = self.gp.predict(self.pos)
+        self.prob, self.sigma2, self.logistic_prob, self.k_star, self.K = self.gp.predict(self.pos)
         print(f" predict → mean = {self.prob:.3f}, var = {self.sigma2:.3f}")
         self.calc_objective_function()
 
@@ -906,92 +1110,121 @@ class UAVController:
         self.update_maps_for_ugv()
         E_map, V_map = self.get_maps_for_ugv()
 
-        # ★ UGV “艦隊”に配布は main 側でやるのでここでは返すだけ
-        #   （または必要なら self.ugv_fleet.plan_all の引数に使われる）
-
-        # --- 3) 参照するUGVの未来ターゲットを艦隊から取得 ---
-        ugv_target_cell = self.ugv_fleet.target_cell_for_uav(
-            self.pos, step_offset=self.step_of_ugv_path_used
-        )
-
-        # 自Voronoiに属しているか（“UAVの”Voronoiを使う既存ロジックはそのまま）
-        ugv_in_my_voronoi = self._in_my_voronoi(ugv_target_cell)
-
+        # --- 3) CBFを使わないモード：全UGVパスで重み付けされた共通分散を最適化 ---
         if self.use_j_gradient_cbf is False:
             if self.k == 0:
                 v_nom = np.zeros(2)
             else:
-                ugv_future_pos = np.array([ugv_target_cell[0], ugv_target_cell[1]], dtype=float)
-                d0=self.d0
-                ell=self.ugv_future_path_sigma
-                waypoint=self.path_generation_for_high_variance_point_including_effect_of_ugv(var_map=V_map, ugv_future_point=ugv_future_pos, d0=d0, ell=ell, use_voronoi=use_voronoi)
+                d0 = self.d0
+
+                # main から渡してもらった「全UGV重み付き共通分散」
+                if hasattr(self, "ugv_weighted_var_map") and self.ugv_weighted_var_map is not None:
+                    V_eff = self.ugv_weighted_var_map
+                else:
+                    V_eff = V_map  # フォールバック
+
+                waypoint = self.path_generation_for_high_variance_point_including_effect_of_ugv(
+                    var_map=V_eff,
+                    ugv_future_point=None,   # ← 全UGV重み付きモード
+                    d0=d0,
+                    ell=self.ugv_future_path_sigma,
+                    use_voronoi=use_voronoi
+                )
                 self.current_waypoint = waypoint
                 v_nom = - self.k_pp * (self.pos - waypoint)
-                #nu_nom = (v_nom - self.v) / self.control_period
-                # --- 4) QP ---
-                self.solver = solver()
-                #self.solver.add_cbfs([cbf_feildlimiation])
-                u = self.solver.solve(v_nom)
 
-            # --- 5) 状態更新 ---
+            self.solver = solver()
+            u = self.solver.solve(v_nom)
+
             self.v = u
             if np.linalg.norm(self.v) >= v_limit:
                 self.v = v_limit * self.v / np.linalg.norm(self.v)
             self.pos += self.v * self.control_period
 
-            # --- 6) クランプ＆ログ ---
             H, W = self.grid_size, self.grid_size
-            self.pos[0] = np.clip(self.pos[0], 0, H-1)
-            self.pos[1] = np.clip(self.pos[1], 0, W-1)
+            self.pos[0] = np.clip(self.pos[0], 0, H - 1)
+            self.pos[1] = np.clip(self.pos[1], 0, W - 1)
             print(f"velocity = {np.linalg.norm(self.v)}")
 
         else:
+            # === 以下は元の J-gradient CBF モード（単一UGVターゲット） ===
+            ugv_target_cell = self.ugv_fleet.target_cell_for_uav(
+                self.pos, step_offset=self.step_of_ugv_path_used
+            )
+
+            ugv_in_my_voronoi = self._in_my_voronoi(ugv_target_cell)
+
             if self.suenaga:
-                # ⇒ suenaga（WayPoint追従）へスイッチ
-                #    自Voronoi外は探索させたい想定なので use_voronoi=True を推奨
-                #　  suenaga=Trueはpath全く無視、path全く無視の宮下やりたい場合はself.use_j_gradient_cbf=Falseを推奨
-                d0=self.d0
-                rho=self.suenega_discount_rate
-                depth=self.suenega_path_gene_depth
+                d0 = self.d0
+                rho = self.suenega_discount_rate
+                depth = self.suenega_path_gene_depth
                 waypoint = self.path_generation_for_uav_suenaga(V_map, rho, depth, use_voronoi)
                 v_nom = -self.k_pp * (self.pos - waypoint)
                 nu_nom = (v_nom - self.v) / self.control_period
                 self.current_waypoint = waypoint
 
             else:
-                if ugv_in_my_voronoi:
-                    if self.k == 0:
-                        nu_nom = np.zeros(2)
-                    else: #
-                        ugv_future_pos = np.array([ugv_target_cell[0], ugv_target_cell[1]], dtype=float)
-                        v_nom = - self.k * (self.pos - ugv_future_pos)
+                # if ugv_in_my_voronoi:
+                #     if self.k == 0:
+                #         nu_nom = np.zeros(2)
+                #     else:
+                #         ugv_future_pos = np.array([ugv_target_cell[0], ugv_target_cell[1]], dtype=float)
+                #         v_nom = - self.k * (self.pos - ugv_future_pos)
+                #         nu_nom = (v_nom - self.v) / self.control_period
+                #     if hasattr(self, 'current_waypoint'):
+                #         delattr(self, 'current_waypoint')
+                if getattr(self, "use_common_ugv_weighted_map", False) and \
+                    hasattr(self, "ugv_weighted_var_map") and self.ugv_weighted_var_map is not None:
+
+                        # 共通mapで最大点（Voronoi内）を採用
+                        V_eff = self.ugv_weighted_var_map
+                        waypoint = self.path_generation_for_high_variance_point_including_effect_of_ugv(
+                            var_map=V_eff,
+                            ugv_future_point=None,
+                            d0=self.d0,
+                            ell=self.ugv_future_path_sigma,
+                            use_voronoi=use_voronoi
+                        )
+                        v_nom = - self.k_pp * (self.pos - waypoint)
                         nu_nom = (v_nom - self.v) / self.control_period
-                    if hasattr(self, 'current_waypoint'):
-                        delattr(self, 'current_waypoint')
+                        self.current_waypoint = waypoint
+
                 else:
-                    # ← ここが抜けると未代入だった（探索のフォールバックを必ず入れる）
-                    waypoint = self.path_generation_for_uav(V_map, use_voronoi=True)
+                    d0 = self.d0
+
+                    # main から渡してもらった「全UGV重み付き共通分散」
+                    if hasattr(self, "ugv_weighted_var_map") and self.ugv_weighted_var_map is not None:
+                        V_eff = self.ugv_weighted_var_map
+                    else:
+                        V_eff = V_map  # フォールバック
+                    waypoint = self.path_generation_for_high_variance_point_including_effect_of_ugv(
+                    var_map=V_eff,
+                    ugv_future_point=None,   # ← 全UGV重み付きモード
+                    d0=d0,
+                    ell=self.ugv_future_path_sigma,
+                    use_voronoi=use_voronoi
+                    )
+                    self.current_waypoint = waypoint
+                    v_nom = - self.k_pp * (self.pos - waypoint)
+
                     v_nom = - self.k_pp * (self.pos - waypoint)
                     nu_nom = (v_nom - self.v) / self.control_period
                     self.current_waypoint = waypoint
 
-            # --- 4) CBF/QP ---
             xi_J1, xi_J2 = self.calc_cbf_terms(self.v, gamma=self.gamma, alpha=self.alpha)
             cbf_J = [-xi_J2, -xi_J1[0], -xi_J1[1], 0.0001]
             self.solver = solver()
             self.solver.add_cbfs([cbf_J])
             nu = self.solver.solve(nu_nom)
 
-            # --- 5) 状態更新 ---
             self.v += nu * self.control_period
             if np.linalg.norm(self.v) >= v_limit:
                 self.v = v_limit * self.v / np.linalg.norm(self.v)
             self.pos += self.v * self.control_period
 
-            # --- 6) クランプ＆ログ ---
             H, W = self.grid_size, self.grid_size
-            self.pos[0] = np.clip(self.pos[0], 0, H-1)
-            self.pos[1] = np.clip(self.pos[1], 0, W-1)
+            self.pos[0] = np.clip(self.pos[0], 0, H - 1)
+            self.pos[1] = np.clip(self.pos[1], 0, W - 1)
             print(f"xi_J1 = {xi_J1}, norm = {np.linalg.norm(xi_J1)}")
             print(f"velocity = {np.linalg.norm(self.v)}")
 
@@ -999,54 +1232,67 @@ class UAVController:
 # ─── main ─────────────────────────────────────────────────────
 def main(visualize: bool = True):
     # ===== パラメータ =====
-    #全体
-    grid_size  = 50
-    noise_std  = 0.5
-    num_uavs   = 3
-    num_ugvs   = 2            # ★ 複数UGV
-    steps      = 400
+    # 全体
+    grid_size = 50
+    noise_std = 0.5
+    num_uavs = 3
+    num_ugvs = 2            # ★ 複数UGV
+    steps = 600
     map_publish_preriod = 0.5
-    d0=5.0
+    d0 = 10.0
     use_voronoi = True
 
-    #UGV
-    ugv_depth  = 8
-    reward_type=3
-    discount_factor=0.95
+    # UGV
+    ugv_depth = 8
+    reward_type = 3
+    discount_factor = 0.95
 
-    #UAV
-    v_limit    = 25.0
+    # UAV
+    v_limit = 25.0
     step_of_ugv_path_used = 6
     suenaga_on = False
-    suenaga_discount_rate=0.95
-    suenaga_path_gene_rate=5
-    use_j_gradient_cbf = False
-    ugv_future_path_sigma=5.0
-    unom_gain=2.0
-    suenaga_gain=2.0
-    cbf_j_alpha=1.0
-    cbf_j_gamma=3.0
+    suenaga_discount_rate = 0.95
+    suenaga_path_gene_rate = 5
+    use_j_gradient_cbf = True  # ★ 今回のモード
+    ugv_future_path_sigma = 5.0
+    unom_gain = 2.0
+    suenaga_gain = 2.0
+    cbf_j_alpha = 1.0
+    cbf_j_gamma = 3.0
+    ugv_weight_eta = 0.3
 
     # GP
-    gp_sensing_noise_sigma0=0.4
-    gp_max_basis=100
-    gp_threshold_delta=0.05
-    rbf_sigma=2.0
+    gp_sensing_noise_sigma0 = 0.4
+    gp_max_basis = 100
+    gp_threshold_delta = 0.05
+    rbf_sigma = 2.0
 
-    #visualize
-    visualize=True
+    visualize = True
+    USE_COMMON_UGV_WEIGHTED_MAP = True
+    COMMON_MAP_MODE = "direction"
+
+    #DIRECTION
+    num_steps=ugv_depth
+    ell_u=8.0
+    ell_perp=4.0
+    eta_forward=2.0
+    forward_shift=0.0
+    mode="sum"
+    normalize=True
+    DEBUG_SHOW_WDIR = False
+    DEBUG_EVERY = 20
 
     gt = generate_ground_truth_map(grid_size)
 
     # ===== UGV 複数生成 =====
     ugvs = []
-    center = np.array([grid_size/2, grid_size/2], dtype=float)
-    Rg = grid_size/6
-    thetas_g = np.linspace(0, 2*np.pi, num_ugvs, endpoint=False)
+    center = np.array([grid_size / 2, grid_size / 2], dtype=float)
+    Rg = grid_size / 6
+    thetas_g = np.linspace(0, 2 * np.pi, num_ugvs, endpoint=False)
     for k in range(num_ugvs):
         ugv = UGVController(grid_size, reward_type=reward_type, discount_factor=discount_factor)
         p0 = center + Rg * np.array([np.cos(thetas_g[k]), np.sin(thetas_g[k])], dtype=float)
-        p0 = np.clip(p0, 0, grid_size-1)
+        p0 = np.clip(p0, 0, grid_size - 1)
         ugv.position = p0.astype(int)  # UGVはセル座標（int）
         ugv.visited[ugv.position[0], ugv.position[1]] = True
         ugvs.append(ugv)
@@ -1054,12 +1300,12 @@ def main(visualize: bool = True):
     ugv_fleet = UGVFleet(ugvs)
 
     # ===== UAV 群 生成 =====
-    Ru = grid_size/4
-    thetas = np.linspace(0, 2*np.pi, num_uavs, endpoint=False)
+    Ru = grid_size / 4
+    thetas = np.linspace(0, 2 * np.pi, num_uavs, endpoint=False)
     uavs = []
     for k in range(num_uavs):
         p0 = center + Ru * np.array([np.cos(thetas[k]), np.sin(thetas[k])], dtype=float)
-        p0 = np.clip(p0, 0, grid_size-1)
+        p0 = np.clip(p0, 0, grid_size - 1)
 
         init_obs = environment_function(p0, gt, noise_std=noise_std)
         init_x = np.vstack([p for p, _ in init_obs])
@@ -1075,6 +1321,7 @@ def main(visualize: bool = True):
             suenaga=suenaga_on,
             use_j_gradient_cbf=use_j_gradient_cbf,
             use_voronoi=use_voronoi,
+            use_common_ugv_weighted_map=USE_COMMON_UGV_WEIGHTED_MAP,
             map_publish_period=map_publish_preriod,
             unom_gain=unom_gain,
             d0=d0,
@@ -1092,7 +1339,7 @@ def main(visualize: bool = True):
         uavs.append(uav)
 
     # ===== 可視化セットアップ =====
-    colors = ['r','c','m','y','g','b']
+    colors = ['r', 'c', 'm', 'y', 'g', 'b']
     ugv_colors = ['k', '#444444', '#111111', '#888888']
 
     trajs_uav = [[u.pos.copy()] for u in uavs]
@@ -1104,38 +1351,40 @@ def main(visualize: bool = True):
         ax[0].contour(gt, levels=[0.5], colors='white', linewidths=2, origin='lower', zorder=12)
         im_mean = ax[0].imshow(np.zeros((grid_size, grid_size)),
                                vmin=0, vmax=1, cmap='jet', origin='lower')
-        im_var  = ax[1].imshow(np.zeros((grid_size, grid_size)),
-                               vmin=0, vmax=1, cmap='jet', origin='lower')
-        cb0 = fig.colorbar(im_mean, ax=ax[0], fraction=0.046, pad=0.04); cb0.set_label('Estimated mean (fused)')
-        cb1 = fig.colorbar(im_var,  ax=ax[1], fraction=0.046, pad=0.04); cb1.set_label('Estimated variance (fused)')
+        im_var = ax[1].imshow(np.zeros((grid_size, grid_size)),
+                              vmin=0, vmax=1, cmap='jet', origin='lower')
+        cb0 = fig.colorbar(im_mean, ax=ax[0], fraction=0.046, pad=0.04)
+        cb0.set_label('Estimated mean (fused)')
+        cb1 = fig.colorbar(im_var, ax=ax[1], fraction=0.046, pad=0.04)
+        cb1.set_label('Estimated variance (fused)')
 
-        uav_dots  = [ax[0].plot([], [], 'o', color=colors[i % len(colors)],
-                                 label=f'UAV{i}', zorder=12+i)[0] for i in range(num_uavs)]
+        uav_dots = [ax[0].plot([], [], 'o', color=colors[i % len(colors)],
+                               label=f'UAV{i}', zorder=12 + i)[0] for i in range(num_uavs)]
         uav_lines = [ax[0].plot([], [], '-', color=colors[i % len(colors)],
-                                 markersize=3, zorder=6+i)[0] for i in range(num_uavs)]
+                                markersize=3, zorder=6 + i)[0] for i in range(num_uavs)]
 
         ugv_lines = [ax[0].plot([], [], '-x', color=ugv_colors[i % len(ugv_colors)],
-                                markersize=3, label=f'UGV{i} Path', zorder=20+i)[0]
+                                markersize=3, label=f'UGV{i} Path', zorder=20 + i)[0]
                      for i in range(num_ugvs)]
-        ugv_dots  = [ax[0].plot([], [], 'wo', markeredgecolor='k',
-                                label=f'UGV{i}', zorder=21+i)[0]
-                     for i in range(num_ugvs)]
+        ugv_dots = [ax[0].plot([], [], 'wo', markeredgecolor='k',
+                               label=f'UGV{i}', zorder=21 + i)[0]
+                    for i in range(num_ugvs)]
 
-        waypoint_dots = [ ax[0].plot([], [], 's', color=colors[i % len(colors)],
-                                     markersize=6, label=f'UAV{i} WP', zorder=30+i)[0]
-                          for i in range(num_uavs) ]
+        waypoint_dots = [ax[0].plot([], [], 's', color=colors[i % len(colors)],
+                                    markersize=6, label=f'UAV{i} WP', zorder=30 + i)[0]
+                         for i in range(num_uavs)]
 
         ugv_plan_lines = []
         ugv_plan_targets = []
         for i in range(num_ugvs):
             line, = ax[0].plot([], [], '--', alpha=1.0, linewidth=2.5,
-                               label=f'UGV{i} planned', zorder=25+i)
+                               label=f'UGV{i} planned', zorder=25 + i)
             line.set_color('#FFFF00')
             line.set_path_effects([pe.Stroke(linewidth=4.0, foreground='black'), pe.Normal()])
             ugv_plan_lines.append(line)
 
             tgt, = ax[0].plot([], [], 'o', mfc='#FFFF00', mec='black',
-                              markersize=9, label=f'UGV{i} target', zorder=26+i)
+                              markersize=9, label=f'UGV{i} target', zorder=26 + i)
             ugv_plan_targets.append(tgt)
 
         empty_mask = np.zeros((grid_size, grid_size), dtype=bool)
@@ -1144,11 +1393,10 @@ def main(visualize: bool = True):
         vor_cnt_lines = [None for _ in range(num_uavs)]
 
         ax[0].legend(loc='upper right')
-        ax[0].set_xlim(0, grid_size-1)
-        ax[0].set_ylim(0, grid_size-1)
+        ax[0].set_xlim(0, grid_size - 1)
+        ax[0].set_ylim(0, grid_size - 1)
         ax[0].autoscale(False)
     else:
-        # 可視化しないとき用のダミー（参照されない）
         fig = ax = im_mean = im_var = None
         uav_dots = uav_lines = ugv_lines = ugv_dots = waypoint_dots = []
         ugv_plan_lines = ugv_plan_targets = []
@@ -1161,14 +1409,13 @@ def main(visualize: bool = True):
 
     for step in range(steps):
         print(f"=== Step {step} ===")
-        # --- (A) UAVのVoronoi 更新（計算は常に行う） ---
+        # --- (A) UAVのVoronoi 更新 ---
         positions_now_uav = [u.pos.copy() for u in uavs]
         masks_uav = compute_voronoi_masks(positions_now_uav, grid_size, grid_size)
 
         for i, m in enumerate(masks_uav):
             uavs[i].set_voronoi_mask(m)
 
-        # 可視化だけ別途
         if visualize:
             for ln in vor_cnt_lines:
                 if ln is not None:
@@ -1182,20 +1429,20 @@ def main(visualize: bool = True):
                 )
                 vor_layers[i].set_data(mask_to_rgba(m, colors[i % len(colors)], alpha=0.18))
 
-        # --- (B) UAV を更新（観測→キャッシュ更新まで） ---
-        for uav in uavs:
-            env_fn = (lambda p, _gt=gt: environment_function(p, _gt, noise_std))
-            # 本当はここで観測させたいなら uav.update_map(env_fn) だけ呼ぶ、などに分離してもOK
+        # --- (B) UAV を更新（観測→キャッシュ更新までの環境関数） ---
+        for _ in uavs:
+            # 実際の観測は UAVController.calc 内で env_fn を渡して行う
+            pass
 
         # --- (C) 融合マップ作成 ---
         mean_maps = []
-        var_maps  = []
+        var_maps = []
         for uav in uavs:
             m_map_i, v_map_i = uav.get_maps_for_ugv()
             mean_maps.append(m_map_i)
             var_maps.append(v_map_i)
         fused_mean = np.mean(np.stack(mean_maps, axis=0), axis=0)
-        fused_var  = np.mean(np.stack(var_maps,  axis=0), axis=0)
+        fused_var = np.mean(np.stack(var_maps, axis=0), axis=0)
 
         # --- (D) UGV Voronoi（UGV間）計算 → 全台プラン ---
         ugv_fleet.compute_voronoi(grid_size, grid_size)
@@ -1210,12 +1457,79 @@ def main(visualize: bool = True):
                     plan_x = path_arr[:, 1]
                     ugv_plan_lines[i].set_data(plan_x, plan_y)
 
-                    idx = min(len(path)-1, max(0, 0))
+                    idx = min(len(path) - 1, max(0, 0))
                     tgt = path[idx]
                     ugv_plan_targets[i].set_data([tgt[1]], [tgt[0]])
                 else:
                     ugv_plan_lines[i].set_data([], [])
                     ugv_plan_targets[i].set_data([], [])
+
+        # ★ (D') 共通UGV重み付きマップ（フラグで切替）
+        if USE_COMMON_UGV_WEIGHTED_MAP:
+            if COMMON_MAP_MODE == "direction":
+                # ---- 進行方向レーン重み ----
+                W_common = ugv_fleet.build_direction_weight_map(
+                    H=grid_size, W=grid_size,
+                    num_steps=num_steps,
+                    ell_u=ell_u,
+                    ell_perp=ell_perp,
+                    eta_forward=eta_forward,
+                    forward_shift=forward_shift,
+                    mode=mode,
+                    normalize=normalize
+                )
+            elif COMMON_MAP_MODE == "point":
+                # ---- 既存：step_offset点への等方ガウス ----
+                W_common = ugv_fleet.build_path_weight_map(
+                    H=grid_size, W=grid_size,
+                    ell=ugv_future_path_sigma,
+                    step_offset=step_of_ugv_path_used
+                )
+            else:
+                raise ValueError(f"Unknown COMMON_MAP_MODE: {COMMON_MAP_MODE}")
+
+            V_eff = fused_var * (1.0 + ugv_weight_eta * W_common)
+        else:
+            V_eff = None  # 使わない
+
+        if isinstance(W_common, np.ndarray) and DEBUG_SHOW_WDIR and (step % DEBUG_EVERY == 0):
+            figW, axW = plt.subplots(1, 1, figsize=(5, 5))
+            axW.imshow(W_common, origin="lower")
+            axW.set_title(f"W_dir at step {step}")
+            plt.colorbar(axW.images[0], ax=axW, fraction=0.046, pad=0.04)
+
+            # 各UGVの planned_path から矢印を描く
+            for k, path in enumerate(ugv_fleet.planned_paths):
+                if not path:
+                    continue
+                p0 = np.array(path[0], dtype=float)
+                pN = np.array(path[min(len(path)-1, 9)], dtype=float)  # num_steps=10想定
+                d = pN - p0
+                n = np.linalg.norm(d)
+                if n < 1e-9:
+                    continue
+                d_hat = d / n
+
+                # 矢印: (x=j, y=i) に注意
+                axW.scatter([p0[1]], [p0[0]], c="white", edgecolors="black", s=60, zorder=10)
+                axW.arrow(
+                    p0[1], p0[0],
+                    d_hat[1] * 8, d_hat[0] * 8,   # 8セル分くらい表示
+                    head_width=0.8, head_length=1.2,
+                    fc="white", ec="black", linewidth=2.0, zorder=11
+                )
+
+            plt.tight_layout()
+            plt.show(block=False)
+            plt.pause(0.001)
+
+        # ★ 各UAVに配布（使わないなら None）
+        for uav in uavs:
+            uav.ugv_weighted_var_map = None if V_eff is None else V_eff.copy()
+
+        # ★ 各UAVに「全UGVパスの重み付き共通分散」を渡す
+        for uav in uavs:
+            uav.ugv_weighted_var_map = V_eff.copy()
 
         # --- (E) UAV 制御 ---
         for uav in uavs:
@@ -1223,7 +1537,7 @@ def main(visualize: bool = True):
             uav.calc(env_fn, v_limit=v_limit)
 
         # --- (F) UGV を一歩進める ---
-        ugv_fleet.step_all(fused_mean, fused_var, depth=ugv_depth, step=step+1)
+        ugv_fleet.step_all(fused_mean, fused_var, depth=ugv_depth, step=step + 1)
 
         # --- (G) ログ＆可視化更新 ---
         J = np.sum(fused_var)
@@ -1261,30 +1575,27 @@ def main(visualize: bool = True):
             fig.canvas.draw()
             plt.pause(0.1)
 
-            print(f"J={J:.3f}, True crop sum={J:.3f} at step {step}")
-            print(f"C_matrix={uavs[0].gp.C}, #basis={len(uavs[0].gp.X)}")
-
+            print(f"J={J:.3f}, True crop sum={total_crop:.3f} at step {step}")
+            #print(f"C_matrix={uavs[0].gp.C}, #basis={len(uavs[0].gp.X)}")
 
     if visualize:
         plt.ioff()
         plt.close(fig)
 
-    # ===== 結果保存など（可視化OFFでもやる） =====
+    # ===== 結果保存など =====
     visited_union = np.zeros_like(gt, dtype=bool)
     for u in ugvs:
         visited_union |= u.visited
     total_crop = np.sum(gt[visited_union])
     print(f"UGVs が訪問した作物の合計（真値）: {total_crop:.3f}")
 
-    # ステップごとの指標
     df = pd.DataFrame({
         'step': np.arange(len(J_history)),
         'J': J_history,
         'true_crop_sum': true_sum_history
     })
-    df.to_csv('multi_uav_multi_ugv_results_off_cbf_logistic.csv', index=False)
+    df.to_csv('multi_uav_multi_ugv_results_off_cbf_change_J.csv', index=False)
 
-    # パラメータ記録
     gp0 = uavs[0].gp
     params_info = {
         # 全体
@@ -1332,17 +1643,17 @@ def main(visualize: bool = True):
     }
 
     param_df = pd.DataFrame([params_info])
-    param_df.to_csv('multi_uav_multi_ugv_params_off_cbf_logistic.csv', index=False)
+    param_df.to_csv('multi_uav_multi_ugv_params_off_cbf_change_J.csv', index=False)
 
     print("\n=== 実験パラメータを記録しました ===")
     for k, v in params_info.items():
         print(f"{k:25s}: {v}")
-    print("results saved to multi_uav_multi_ugv_results_off_cbf_logistic.csv")
+    print("results saved to multi_uav_multi_ugv_results_off_cbf_change_J.csv")
 
     if visualize:
         # ===== 最終結果の並列表示（融合マップ） =====
         final_mean = fused_mean
-        final_var  = fused_var
+        final_var = fused_var
 
         fig2, axes = plt.subplots(1, 3, figsize=(15, 5))
         im_true = axes[0].imshow(gt, origin='lower', cmap='jet', vmin=0.0, vmax=1.0)
@@ -1355,17 +1666,17 @@ def main(visualize: bool = True):
 
         im_var2 = axes[2].imshow(final_var, origin='lower', cmap='jet')
         axes[2].set_title("Estimated Variance (fused)")
-        plt.colorbar(im_var2,  ax=axes[2], fraction=0.046, pad=0.04)
+        plt.colorbar(im_var2, ax=axes[2], fraction=0.046, pad=0.04)
 
         for ax_ in axes:
             for i in range(num_ugvs):
                 pv = np.array(trajs_ugv[i])
                 ax_.plot(pv[:, 1], pv[:, 0], '-x', color='black', markersize=4,
-                         label=f'UGV{i} Path', zorder=5+i)
+                         label=f'UGV{i} Path', zorder=5 + i)
             for i in range(num_uavs):
                 pu = np.array(trajs_uav[i])
                 ax_.plot(pu[:, 1], pu[:, 0], '-', color=colors[i % len(colors)], linewidth=1,
-                         label=f'UAV{i} Path', zorder=4+i)
+                         label=f'UAV{i} Path', zorder=4 + i)
         axes[0].legend(loc='upper right')
 
         plt.tight_layout()

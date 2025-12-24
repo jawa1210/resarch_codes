@@ -116,7 +116,8 @@ def plot_two_results_files(
     if mean1.empty:
         print("file1 の平均用データが空です。CSV を確認してください。")
         return
-
+    
+    mean=mean1["step"].to_numpy()
     t1_mean = mean1["step"].to_numpy() * dt   # 秒
     J1_mean = mean1["J"].to_numpy()
     C1_mean = mean1["true_crop_sum"].to_numpy()
@@ -191,7 +192,7 @@ def plot_two_results_files(
             print(f"[WARN] {file1}: num_uavs が取得できなかったので N=1 とみなして理論線を描画します。")
 
         # 理論線: J_ideal(t) = J0 - N * gamma * t
-        J_ideal = J0 - N * gamma * t_common
+        J_ideal = J0 - N * (gamma/dt) * t_common
 
         ax.plot(
             t_common, J_ideal,
