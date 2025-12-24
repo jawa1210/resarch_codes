@@ -1004,7 +1004,10 @@ def main(visualize: bool = True):
     noise_std  = 0.5
     num_uavs   = 3
     num_ugvs   = 2            # ★ 複数UGV
+<<<<<<< HEAD
     steps      = 600
+=======
+>>>>>>> 53a4feb (toriaezu)
     steps      = 400
     map_publish_preriod = 0.5
     d0=5.0
@@ -1021,10 +1024,10 @@ def main(visualize: bool = True):
     suenaga_on = False
     suenaga_discount_rate=0.95
     suenaga_path_gene_rate=5 #predict 5 steps
-    use_j_gradient_cbf = False
+    use_j_gradient_cbf = True
     ugv_future_path_sigma=5.0
-    unom_gain=0.2
-    suenaga_gain=0.5
+    unom_gain=2.0
+    suenaga_gain=2.0
     cbf_j_alpha=1.0
     cbf_j_gamma=3.0
 
@@ -1282,7 +1285,11 @@ def main(visualize: bool = True):
         'J': J_history,
         'true_crop_sum': true_sum_history
     })
+<<<<<<< HEAD
     df.to_csv('multi_uav_multi_ugv_results_off_cbf_logistic.csv', index=False)
+=======
+    df.to_csv('multi_uav_multi_ugv_results_on_cbf.csv', index=False)
+>>>>>>> 53a4feb (toriaezu)
 
     # パラメータ記録
     gp0 = uavs[0].gp
@@ -1332,12 +1339,20 @@ def main(visualize: bool = True):
     }
 
     param_df = pd.DataFrame([params_info])
+<<<<<<< HEAD
     param_df.to_csv('multi_uav_multi_ugv_params_off_cbf_logistic.csv', index=False)
+=======
+    param_df.to_csv('multi_uav_multi_ugv_params_on_cbf.csv', index=False)
+>>>>>>> 53a4feb (toriaezu)
 
     print("\n=== 実験パラメータを記録しました ===")
     for k, v in params_info.items():
         print(f"{k:25s}: {v}")
+<<<<<<< HEAD
     print("results saved to multi_uav_multi_ugv_results_off_cbf_logistic.csv")
+=======
+    print("results saved to multi_uav_multi_ugv_results_on_cbfa.csv")
+>>>>>>> 53a4feb (toriaezu)
 
     if visualize:
         # ===== 最終結果の並列表示（融合マップ） =====
