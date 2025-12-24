@@ -13,7 +13,7 @@ mpl.rcParams['axes.titlesize']     = 20
 mpl.rcParams['axes.labelsize']     = 20
 mpl.rcParams['legend.fontsize']    = 16
 mpl.rcParams['xtick.labelsize']    = 16
-mpl.rcParams['ytick.labelsize']    = 16r
+mpl.rcParams['ytick.labelsize']    = 16
 
 def plot_files(file_list, gamma=3.0):
     data = []
@@ -57,5 +57,5 @@ def plot_files(file_list, gamma=3.0):
 
 if __name__ == "__main__":
     # 1つだけプロットしたいときは ['with_ugv_path.csv'] のようにリストを1要素にする
-    files = ['multi_uav_multi_ugv_results_suenaga.csv']  # 実際のファイル名に置き換えてください
+    files = ['multi_uav_multi_ugv_results_off_cbf.csv','multi_uav_multi_ugv_results_off_cbf_logistic.csv']  # 実際のファイル名に置き換えてください
     plot_files(files)
