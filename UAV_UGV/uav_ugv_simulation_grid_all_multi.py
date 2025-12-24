@@ -1004,6 +1004,7 @@ def main(visualize: bool = True):
     noise_std  = 0.5
     num_uavs   = 3
     num_ugvs   = 2            # ★ 複数UGV
+    steps      = 600
     steps      = 400
     map_publish_preriod = 0.5
     d0=5.0
@@ -1261,8 +1262,7 @@ def main(visualize: bool = True):
             fig.canvas.draw()
             plt.pause(0.1)
 
-            print(f"J={J:.3f}, True crop sum={J:.3f} at step {step}")
-            print(f"C_matrix={uavs[0].gp.C}, #basis={len(uavs[0].gp.X)}")
+        print(f"J={J:.3f}, True crop sum={total_crop:.3f} at step {step}")
 
 
     if visualize:
