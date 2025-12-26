@@ -204,6 +204,7 @@ class SparseOnlineGP:
         mu = float(self.a.dot(k_vec))
         var = float(self.kernel(x, x) + k_vec.dot(self.C.dot(k_vec)))
 
+        # logistic with variance (Jaakkola-like)
         z_raw = mu / np.sqrt(1.0 + (np.pi / 8.0) * var)
         z = float(1.0 / (1.0 + np.exp(-z_raw)))
         return mu, var, z, k_vec, self.C
@@ -300,11 +301,13 @@ class UGVController:
 
     def _calculate_reward(self, pos: np.ndarray, current_pos: np.ndarray,
                           expectation_map: np.ndarray, variance_map: np.ndarray,
+                          ambiguity_map: Optional[np.ndarray],
                           k1, k2, k3, k4, k5, k6, epsilon,
                           reward_type: int, step: int) -> float:
         d = float(np.linalg.norm(pos - current_pos))
         E = float(expectation_map[pos[0], pos[1]])
         V = float(variance_map[pos[0], pos[1]])
+        U = 0.0 if ambiguity_map is None else float(ambiguity_map[pos[0], pos[1]])
 
         if reward_type == 0:
             return (k1 * E - V) / (d ** 2 + epsilon)
@@ -316,11 +319,22 @@ class UGVController:
             delta = 0.1
             beta = 2 * np.log((np.pi ** 2) * (step ** 2) / (6 * delta))
             return E - float(np.sqrt(beta * V))
+
+        # ---- logistic versions ----
+        # reward_type=4: exploit p, penalize ambiguity p(1-p)
+        elif reward_type == 4:
+            return (k1 * E - k2 * U) / (d ** 2 + epsilon)
+
+        # reward_type=5: exploit p, but also a bit explore ambiguity
+        elif reward_type == 5:
+            return (k1 * E + k2 * U) / (d ** 2 + epsilon)
+
         else:
             return 0.0
 
     def _recursive_search(self, pos: np.ndarray,
                           expectation_map: np.ndarray, variance_map: np.ndarray,
+                          ambiguity_map: Optional[np.ndarray],
                           depth: int, visited: np.ndarray, step: int,
                           allowed_mask: Optional[np.ndarray] = None) -> Tuple[np.ndarray, float]:
         actions = np.array([[-1, 0], [1, 0], [0, -1], [0, 1]])
@@ -345,7 +359,7 @@ class UGVController:
             new_visited[nxt[0], nxt[1]] = True
 
             r = self._calculate_reward(
-                nxt, pos, expectation_map, variance_map,
+                nxt, pos, expectation_map, variance_map, ambiguity_map,
                 k1, k2, k3, k4, k5, k6, epsilon,
                 self.reward_type, step
             )
@@ -355,7 +369,7 @@ class UGVController:
             total = r
             if depth > 1:
                 _, fut = self._recursive_search(
-                    nxt, expectation_map, variance_map,
+                    nxt, expectation_map, variance_map, ambiguity_map,
                     depth - 1, new_visited, step + 1, allowed_mask=allowed_mask
                 )
                 total += self.discount_factor * fut
@@ -367,9 +381,10 @@ class UGVController:
         return best_move, float(best_reward)
 
     def calc(self, expectation_map: np.ndarray, variance_map: np.ndarray,
+             ambiguity_map: Optional[np.ndarray] = None,
              depth: int = 10, step: int = 1, allowed_mask: Optional[np.ndarray] = None):
         new_pos, _ = self._recursive_search(
-            self.position, expectation_map, variance_map,
+            self.position, expectation_map, variance_map, ambiguity_map,
             depth, self.visited.copy(), step, allowed_mask=allowed_mask
         )
         if not np.array_equal(new_pos, self.position):
@@ -377,6 +392,7 @@ class UGVController:
             self.visited[new_pos[0], new_pos[1]] = True
 
     def get_planned_path(self, expectation_map: np.ndarray, variance_map: np.ndarray,
+                         ambiguity_map: Optional[np.ndarray] = None,
                          depth: int = 10, allowed_mask: Optional[np.ndarray] = None) -> List[np.ndarray]:
         path = []
         pos = self.position.copy()
@@ -384,7 +400,7 @@ class UGVController:
 
         for t in range(depth):
             nxt, _ = self._recursive_search(
-                pos, expectation_map, variance_map,
+                pos, expectation_map, variance_map, ambiguity_map,
                 depth - t, visited, t + 1, allowed_mask=allowed_mask
             )
             path.append(nxt.copy())
@@ -405,19 +421,21 @@ class UGVFleet:
     def compute_voronoi(self, H: int, W: int):
         self.voronoi_masks = compute_voronoi_masks(self.positions(), H, W)
 
-    def plan_all(self, mean_map: np.ndarray, var_map: np.ndarray, depth: int):
+    def plan_all(self, mean_map: np.ndarray, var_map: np.ndarray, depth: int,
+                 ambiguity_map: Optional[np.ndarray] = None):
         H, W = mean_map.shape
         if (not self.voronoi_masks) or (len(self.voronoi_masks) != len(self.ugvs)):
             self.compute_voronoi(H, W)
 
         self.planned_paths = []
         for u, mask in zip(self.ugvs, self.voronoi_masks):
-            path = u.get_planned_path(mean_map, var_map, depth=depth, allowed_mask=mask)
+            path = u.get_planned_path(mean_map, var_map, ambiguity_map=ambiguity_map, depth=depth, allowed_mask=mask)
             self.planned_paths.append(path)
 
-    def step_all(self, mean_map: np.ndarray, var_map: np.ndarray, depth: int, step: int):
+    def step_all(self, mean_map: np.ndarray, var_map: np.ndarray, depth: int, step: int,
+                 ambiguity_map: Optional[np.ndarray] = None):
         for u, mask in zip(self.ugvs, self.voronoi_masks):
-            u.calc(mean_map, var_map, depth=depth, step=step, allowed_mask=mask)
+            u.calc(mean_map, var_map, ambiguity_map=ambiguity_map, depth=depth, step=step, allowed_mask=mask)
 
     def target_cell_for_uav(self, uav_pos: np.ndarray, step_offset: int) -> tuple[int, int]:
         best_cell = None
@@ -550,6 +568,9 @@ NominalMode = Literal["to_waypoint", "to_ugv_future"]
 CommonMapMode = Literal["point", "direction"]
 SignalMode = Literal["gp_mean", "gp_logistic_prob"]
 
+# ★追加：UAV waypoint に使う信号
+UAVWaypointSignal = Literal["gp_var", "prob_ambiguity"]
+
 
 @dataclass
 class UAVConfig:
@@ -587,6 +608,9 @@ class UAVConfig:
 
     # UGV reward signal map choice
     signal_mode: SignalMode = "gp_mean"
+
+    # ★追加：UAV waypoint に使う信号
+    uav_waypoint_signal: UAVWaypointSignal = "gp_var"
 
     # map publish
     map_publish_period: float = 0.5
@@ -687,11 +711,6 @@ class UAVController:
         return mean_map, var_map, prob_map
 
     def calc_cbf_terms(self, u: np.ndarray, gamma: float, alpha: float) -> Tuple[np.ndarray, float]:
-        """
-        NOTE: Bj_n��A.8
-�Œr�SncWUoBj_tnև�X	
-        return: xi_J1 (grad), xi_J2 (2nd)
-        """
         r2 = self.rbf_sigma ** 2
         ns = len(self.gp.X)
         xi_J1 = np.zeros(2, dtype=float)
@@ -946,10 +965,17 @@ class UAVController:
 
         # 2) update cached maps
         self.update_maps_for_ugv()
-        _, V_map, _ = self.get_maps_for_ugv()
+        _, V_map, P_map = self.get_maps_for_ugv()
+
+        # ★UAV waypoint に使うマップ切替（var or ambiguity）
+        if cfg.uav_waypoint_signal == "prob_ambiguity":
+            A_map = P_map * (1.0 - P_map)  # p(1-p)
+            V_for_wp = A_map
+        else:
+            V_for_wp = V_map
 
         # 3) choose waypoint
-        waypoint = self._choose_waypoint(V_map)
+        waypoint = self._choose_waypoint(V_for_wp)
         self.current_waypoint = waypoint
 
         # 4) nominal accel (nu_nom) from desired velocity
@@ -1017,7 +1043,7 @@ def main(visualize: bool = False):
 
     # UGV planning
     ugv_depth = 8
-    reward_type = 3
+    reward_type = 4          # ★例: 4(p - ambiguity) / 5(p + ambiguity) / 3(UCBなど従来)
     discount_factor = 0.95
 
     # GP
@@ -1070,7 +1096,10 @@ def main(visualize: bool = False):
         cbf_j_gamma=3.0,
 
         # UGV reward map signal
-        signal_mode="gp_mean",             # "gp_mean" / "gp_logistic_prob"
+        signal_mode="gp_logistic_prob",    # ★ "gp_mean" / "gp_logistic_prob"
+
+        # ★UAV waypoint signal
+        uav_waypoint_signal="prob_ambiguity",  # ★ "gp_var" / "prob_ambiguity"
 
         map_publish_period=0.5,
 
@@ -1159,7 +1188,7 @@ def main(visualize: bool = False):
                               vmin=0, vmax=1, cmap='jet', origin='lower')
 
         cb0 = fig.colorbar(im_mean, ax=ax[0], fraction=0.046, pad=0.04)
-        cb0.set_label('Estimated mean (fused)')
+        cb0.set_label('Estimated mean/prob (fused)')
         cb1 = fig.colorbar(im_var, ax=ax[1], fraction=0.046, pad=0.04)
         cb1.set_label('Estimated variance (fused)')
 
@@ -1243,17 +1272,19 @@ def main(visualize: bool = False):
             prob_maps.append(p_map_i)
 
         fused_mean = np.mean(np.stack(mean_maps, axis=0), axis=0)
-        fused_var = np.mean(np.stack(var_maps, axis=0), axis=0)
+        fused_var  = np.mean(np.stack(var_maps,  axis=0), axis=0)
         fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
+        fused_amb  = fused_prob * (1.0 - fused_prob)  # ★追加
 
         # (C) UGV Voronoi among UGVs, plan all
         ugv_fleet.compute_voronoi(grid_size, grid_size)
 
         ugv_E = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
-        ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth)
+        ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth, ambiguity_map=fused_amb)
 
-        # (C') common weighted var map (optional)
+        # (C') common weighted map (optional) for UAV waypoint
         V_eff = None
+        A_eff = None
         if cfg.use_common_map:
             if cfg.common_map_mode == "direction":
                 W_common = ugv_fleet.build_direction_weight_map(
@@ -1272,10 +1303,15 @@ def main(visualize: bool = False):
                     ell=cfg.ugv_future_path_sigma,
                     step_offset=cfg.step_of_ugv_path_used
                 )
+
             V_eff = fused_var * (1.0 + cfg.ugv_weight_eta * W_common)
+            A_eff = fused_amb * (1.0 + cfg.ugv_weight_eta * W_common)
 
         for uav in uavs:
-            uav.ugv_weighted_var_map = None if (V_eff is None) else V_eff.copy()
+            if cfg.uav_waypoint_signal == "prob_ambiguity":
+                uav.ugv_weighted_var_map = None if (A_eff is None) else A_eff.copy()
+            else:
+                uav.ugv_weighted_var_map = None if (V_eff is None) else V_eff.copy()
 
         # (D) UAV move (observe inside)
         for uav in uavs:
@@ -1283,7 +1319,7 @@ def main(visualize: bool = False):
             uav.calc(env_fn)
 
         # (E) UGV step after UAV moved
-        ugv_fleet.step_all(ugv_E, fused_var, depth=ugv_depth, step=step + 1)
+        ugv_fleet.step_all(ugv_E, fused_var, depth=ugv_depth, step=step + 1, ambiguity_map=fused_amb)
 
         # (F) log & visualize
         J = float(np.sum(fused_var))
@@ -1295,6 +1331,7 @@ def main(visualize: bool = False):
         true_sum_history.append(total_crop)
 
         if visualize:
+            # 左：表示は mean でも prob でもお好みで。ここは fused_mean を表示のままにする
             im_mean.set_data(fused_mean)
             im_var.set_data(fused_var)
 
@@ -1372,7 +1409,7 @@ def main(visualize: bool = False):
         # ===== Jの推移と理論直線 =====
         t = np.arange(len(J_history))
         J0 = float(J_history[0]) if len(J_history) > 0 else 0.0
-        gamma = float(cfg.cbf_j_gamma)  # ← ここが重要（uavs[0].gamma は無い）
+        gamma = float(cfg.cbf_j_gamma)
 
         theory = J0 - gamma * t
 
@@ -1386,7 +1423,6 @@ def main(visualize: bool = False):
         plt.legend()
         plt.tight_layout()
         plt.show(block=True)
-
 
     # ---------------- save results ----------------
     visited_union = np.zeros_like(gt, dtype=bool)
@@ -1421,6 +1457,7 @@ def main(visualize: bool = False):
         'cfg.use_common_map': cfg.use_common_map,
         'cfg.common_map_mode': cfg.common_map_mode,
         'cfg.signal_mode': cfg.signal_mode,
+        'cfg.uav_waypoint_signal': cfg.uav_waypoint_signal,
 
         'cfg.d0': cfg.d0,
         'cfg.step_of_ugv_path_used': cfg.step_of_ugv_path_used,
