@@ -1140,6 +1140,11 @@ def main(visualize: bool = False):
 
         signal_mode="gp_logistic_prob",
         uav_waypoint_signal="prob_ambiguity",
+        # UGV reward map signal
+        signal_mode="gp_logistic_prob",    # ★ "gp_mean" / "gp_logistic_prob"
+
+        # ★UAV waypoint signal
+        uav_waypoint_signal="gp_var",  # ★ "gp_var" / "prob_ambiguity"
 
         map_publish_period=0.5,
 
