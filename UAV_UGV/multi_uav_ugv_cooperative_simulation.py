@@ -215,7 +215,6 @@ class SparseOnlineGP:
 # ============================================================
 
 def environment_function(pos: np.ndarray, true_map: np.ndarray, noise_std: float = 0.5) -> List[Tuple[np.ndarray, float]]:
-
     i0, j0 = int(round(pos[0])), int(round(pos[1]))
     H, W = true_map.shape
     observations = []
@@ -567,8 +566,6 @@ WaypointMode = Literal["miyashita", "suenaga_dp", "ugv_future_point", "common_we
 NominalMode = Literal["to_waypoint", "to_ugv_future"]
 CommonMapMode = Literal["point", "direction"]
 SignalMode = Literal["gp_mean", "gp_logistic_prob"]
-
-# ★追加：UAV waypoint に使う信号
 UAVWaypointSignal = Literal["gp_var", "prob_ambiguity"]
 
 
@@ -592,9 +589,9 @@ class UAVConfig:
     ugv_future_path_sigma: float = 5.0
     step_of_ugv_path_used: int = 6
 
-    # ★RING: distance ring params (new)
-    ring_d_star: float = 10.0   # peak distance (cells)
-    ring_sigma: float = 5.0     # ring thickness (cells)
+    # ★RING
+    ring_d_star: float = 10.0
+    ring_sigma: float = 5.0
 
     # suenaga
     suenaga_rho: float = 0.95
@@ -613,7 +610,7 @@ class UAVConfig:
     # UGV reward signal map choice
     signal_mode: SignalMode = "gp_mean"
 
-    # ★追加：UAV waypoint に使う信号
+    # UAV waypoint signal
     uav_waypoint_signal: UAVWaypointSignal = "gp_var"
 
     # map publish
@@ -628,11 +625,14 @@ class UAVConfig:
     dir_mode: str = "sum"
     dir_normalize: bool = True
 
-    # ----- waypoint smoothing: Top-K centroid -----
+    # waypoint smoothing: Top-K centroid
     wp_use_topk_centroid: bool = True
     wp_topk: int = 80
     wp_min_dist: float = 2.0
     wp_power: float = 1.0
+
+    # ★追加：UGVを何stepに1回動かすか
+    ugv_move_period: int = 1  # 1=毎step, 5=5stepに1回
 
 
 # ============================================================
@@ -780,14 +780,7 @@ class UAVController:
         xi_J2 += float(alpha * (np.dot(xi_J1, u) + gamma))
         return xi_J1, float(xi_J2)
 
-    # ========================================================
-    # ★RING: ring distance weight helper
-    # ========================================================
     def _ring_weight_map(self, H: int, W: int, center_ij: np.ndarray) -> np.ndarray:
-        """
-        w(d) = exp(-(d - d*)^2 / (2*sigma^2))
-        center_ij: integer-ish [i, j]
-        """
         cfg = self.cfg
         I, J = np.indices((H, W))
         d = np.hypot(I - float(center_ij[0]), J - float(center_ij[1]))
@@ -795,8 +788,6 @@ class UAVController:
         sig = float(max(cfg.ring_sigma, 1e-6))
         w = np.exp(-((d - d_star) ** 2) / (2.0 * sig ** 2))
         return w
-
-    # ---------------- waypoint generators ----------------
 
     def path_generation_for_uav_suenaga(self, var_map: np.ndarray, rho=0.95, depth=8, use_voronoi=False):
         H, W = var_map.shape
@@ -851,10 +842,6 @@ class UAVController:
         return np.array([next_cell[0], next_cell[1]], dtype=float)
 
     def path_generation_for_uav(self, var_map: np.ndarray, d0: float = 1.0, use_voronoi=False):
-        """
-        ★RING: replace var/(dist2+d0^2) with var * ring_weight
-        d0 kept in signature for compatibility, but not used.
-        """
         H, W = var_map.shape
         ci = np.array([int(round(self.pos[0])), int(round(self.pos[1]))], dtype=int)
         ci[0] = int(np.clip(ci[0], 0, H - 1))
@@ -870,7 +857,6 @@ class UAVController:
                 d = np.hypot(idxs[:, 0] - ci[0], idxs[:, 1] - ci[1])
                 ci = idxs[int(np.argmin(d))]
 
-        # ★RING
         w_ring = self._ring_weight_map(H, W, center_ij=ci)
         score = var_map * w_ring
 
@@ -894,9 +880,6 @@ class UAVController:
         d0: float = 1.0,
         ell: float = 5.0,
     ) -> np.ndarray:
-        """
-        ★RING: replace sigma2/(dist2+d0^2) with sigma2 * ring_weight
-        """
         H, W = var_map.shape
 
         ci = np.array([int(round(self.pos[0])), int(round(self.pos[1]))], dtype=int)
@@ -914,8 +897,6 @@ class UAVController:
                 ci = idxs[int(np.argmin(d))]
 
         I, J = np.indices((H, W))
-
-        # ★RING base
         w_ring = self._ring_weight_map(H, W, center_ij=ci)
         sigma2 = var_map
 
@@ -994,8 +975,6 @@ class UAVController:
         centroid[1] = float(np.clip(centroid[1], 0, W - 1))
         return centroid.astype(float)
 
-    # ---------------- unified waypoint decision ----------------
-
     def _choose_waypoint(self, V_map: np.ndarray) -> np.ndarray:
         cfg = self.cfg
 
@@ -1043,13 +1022,10 @@ class UAVController:
 
         return -cfg.k_pp * (self.pos - waypoint)
 
-    # ---------------- main step ----------------
-
     def calc(self, env_fn: Callable[[np.ndarray], List[Tuple[np.ndarray, float]]]):
         cfg = self.cfg
 
         self.update_map(env_fn)
-
         self.update_maps_for_ugv()
         _, V_map, P_map = self.get_maps_for_ugv()
 
@@ -1111,7 +1087,8 @@ def _unique_path(base_path_no_ext: str, ext: str, enable: bool = True) -> str:
             return cand
         k += 1
 
-visualize=True
+visualize = True
+
 
 def main(visualize: bool = False):
     grid_size = 50
@@ -1133,7 +1110,6 @@ def main(visualize: bool = False):
     RUN_NAME = None
     AUTO_INCREMENT = True
 
-    # ★RING: 推奨初期値
     cfg = UAVConfig(
         use_cbf=True,
         waypoint_mode="common_weighted",
@@ -1148,7 +1124,6 @@ def main(visualize: bool = False):
         ugv_future_path_sigma=5.0,
         step_of_ugv_path_used=6,
 
-        # ★RING
         ring_d_star=10.0,
         ring_sigma=5.0,
 
@@ -1180,13 +1155,16 @@ def main(visualize: bool = False):
         wp_topk=80,
         wp_min_dist=5.0,
         wp_power=1.0,
+
+        # ★ここを変えるだけでUGV周期が変わる
+        ugv_move_period=5,  # 5stepに1回動く
     )
 
     run_name = _make_run_name(RUN_NAME)
     _ensure_dir(RESULTS_DIR)
 
     base = os.path.join(RESULTS_DIR, run_name)
-    csv_cbf_path   = _unique_path(base + "__cbf", ".csv", AUTO_INCREMENT)
+    csv_cbf_path = _unique_path(base + "__cbf", ".csv", AUTO_INCREMENT)
     csv_param_path = _unique_path(base + "__params", ".csv", AUTO_INCREMENT)
 
     print(f"[SAVE] cbf csv   -> {csv_cbf_path}")
@@ -1235,7 +1213,9 @@ def main(visualize: bool = False):
         uav.pos = p0.astype(float)
         uavs.append(uav)
 
-    colors = ['r', 'c', 'm', 'y', 'g', 'b']
+    # ★色変更：UAV1の 'c'(水色) を見やすい色に置換
+    # 例: オレンジ '#ff7f0e'
+    colors = ['r', '#ff7f0e', 'm', 'y', 'g', 'b']
     ugv_colors = ['k', '#444444', '#111111', '#888888']
 
     trajs_uav = [[u.pos.copy()] for u in uavs]
@@ -1243,7 +1223,10 @@ def main(visualize: bool = False):
 
     if visualize:
         plt.ion()
-        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+
+        # ★凡例を外に出すので、右側に余白を作る
+        fig, ax = plt.subplots(1, 2, figsize=(12.5, 5))
+        fig.subplots_adjust(right=0.78)
 
         ax[0].contour(gt, levels=[0.5], colors='white', linewidths=2, origin='lower', zorder=12)
 
@@ -1291,10 +1274,20 @@ def main(visualize: bool = False):
                                    origin='lower', zorder=9) for i in range(num_uavs)]
         vor_cnt_lines = [None for _ in range(num_uavs)]
 
-        ax[0].legend(loc='upper right')
         ax[0].set_xlim(0, grid_size - 1)
         ax[0].set_ylim(0, grid_size - 1)
         ax[0].autoscale(False)
+
+        # ★凡例を外へ（右側）
+        handles, labels = ax[0].get_legend_handles_labels()
+        ax[0].legend(
+            handles, labels,
+            loc='upper left',
+            bbox_to_anchor=(1.02, 1.0),
+            borderaxespad=0.0,
+            frameon=True,
+            fontsize=9
+        )
     else:
         fig = ax = im_mean = im_var = None
         uav_dots = uav_lines = ugv_lines = ugv_dots = waypoint_dots = []
@@ -1334,9 +1327,9 @@ def main(visualize: bool = False):
             prob_maps.append(p_map_i)
 
         fused_mean = np.mean(np.stack(mean_maps, axis=0), axis=0)
-        fused_var  = np.mean(np.stack(var_maps,  axis=0), axis=0)
+        fused_var = np.mean(np.stack(var_maps, axis=0), axis=0)
         fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
-        fused_amb  = fused_prob * (1.0 - fused_prob)
+        fused_amb = fused_prob * (1.0 - fused_prob)
 
         ugv_fleet.compute_voronoi(grid_size, grid_size)
         ugv_E = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
@@ -1376,7 +1369,12 @@ def main(visualize: bool = False):
             env_fn = (lambda p, _gt=gt, _ns=noise_std: environment_function(p, _gt, noise_std=_ns))
             uav.calc(env_fn)
 
-        ugv_fleet.step_all(ugv_E, fused_var, depth=ugv_depth, step=step + 1, ambiguity_map=fused_amb)
+        # ★UGVは ugv_move_period step に1回だけ動かす
+        ugv_period = max(int(cfg.ugv_move_period), 1)
+        if (step % ugv_period) == 0:
+            ugv_fleet.step_all(ugv_E, fused_var, depth=ugv_depth, step=step + 1, ambiguity_map=fused_amb)
+        else:
+            ugv_fleet.compute_voronoi(grid_size, grid_size)
 
         J = float(np.sum(fused_var))
         J_history.append(J)
@@ -1465,7 +1463,6 @@ def main(visualize: bool = False):
         'cfg.ugv_future_path_sigma': cfg.ugv_future_path_sigma,
         'cfg.ugv_weight_eta': cfg.ugv_weight_eta,
 
-        # ★RING
         'cfg.ring_d_star': cfg.ring_d_star,
         'cfg.ring_sigma': cfg.ring_sigma,
 
@@ -1478,6 +1475,8 @@ def main(visualize: bool = False):
         'cfg.control_period': cfg.control_period,
         'cfg.cbf_j_alpha': cfg.cbf_j_alpha,
         'cfg.cbf_j_gamma': cfg.cbf_j_gamma,
+
+        'cfg.ugv_move_period': cfg.ugv_move_period,
 
         'gp_sigma0': gp0.sigma0,
         'gp_max_basis': gp0.max_basis,
