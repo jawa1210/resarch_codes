@@ -1120,7 +1120,7 @@ def main(visualize: bool = False):
         common_map_mode="direction",
         ugv_weight_eta=0.3,
 
-        d0=10.0,
+        d0=5.0,
         ugv_future_path_sigma=5.0,
         step_of_ugv_path_used=6,
 
@@ -1158,7 +1158,7 @@ def main(visualize: bool = False):
 
         wp_use_topk_centroid=True,
         wp_topk=80,
-        wp_min_dist=5.0,
+        wp_min_dist=0.0,
         wp_power=1.0,
 
         # ★ここを変えるだけでUGV周期が変わる
