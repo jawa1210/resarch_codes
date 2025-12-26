@@ -624,6 +624,13 @@ class UAVConfig:
     dir_mode: str = "sum"
     dir_normalize: bool = True
 
+    # ----- waypoint smoothing: Top-K centroid -----
+    wp_use_topk_centroid: bool = True
+    wp_topk: int = 80                 # 例: 30〜200くらいで調整
+    wp_min_dist: float = 2.0          # 現在位置の近すぎを除外（スタック対策）
+    wp_power: float = 1.0             # 重み = score^power（>1で尖らせる）
+
+
 
 # ============================================================
 # 5) UAV Controller
@@ -856,8 +863,12 @@ class UAVController:
         if not np.isfinite(score).any():
             return ci.astype(float)
 
-        ti, tj = np.unravel_index(np.nanargmax(score), score.shape)
-        return np.array([ti, tj], dtype=float)
+        if self.cfg.wp_use_topk_centroid:
+            return self._topk_centroid_waypoint(score, allowed_mask=allowed_mask)
+        else:
+            ti, tj = np.unravel_index(np.nanargmax(score), score.shape)
+            return np.array([ti, tj], dtype=float)
+
 
     def path_generation_for_high_variance_point_including_effect_of_ugv(
         self,
@@ -902,8 +913,82 @@ class UAVController:
         if not np.isfinite(Score).any():
             return ci.astype(float)
 
-        ti, tj = np.unravel_index(np.nanargmax(Score), Score.shape)
-        return np.array([ti, tj], dtype=float)
+        if self.cfg.wp_use_topk_centroid:
+            return self._topk_centroid_waypoint(Score, allowed_mask=allowed_mask)
+        else:
+            ti, tj = np.unravel_index(np.nanargmax(Score), Score.shape)
+            return np.array([ti, tj], dtype=float)
+
+    
+
+    def _topk_centroid_waypoint(
+        self,
+        Score: np.ndarray,
+        allowed_mask: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """
+        Score上位K点の重心を返す（Top-K centroid）
+        - allowed_mask: Trueのセルのみ候補
+        - cfg.wp_min_dist: 現在位置に近すぎる候補を除外（スタック対策）
+        """
+        cfg = self.cfg
+        H, W = Score.shape
+        S = Score.copy()
+
+        # mask outside
+        if allowed_mask is not None:
+            S[~allowed_mask] = -np.inf
+
+        # 近すぎる点を除外（居座り対策）
+        if cfg.wp_min_dist is not None and cfg.wp_min_dist > 0:
+            I, J = np.indices((H, W))
+            d2 = (I - self.pos[0])**2 + (J - self.pos[1])**2
+            S[d2 < (cfg.wp_min_dist**2)] = -np.inf
+
+        # 有効点がなければフォールバック（今の位置）
+        if not np.isfinite(S).any():
+            ci = np.array([int(round(self.pos[0])), int(round(self.pos[1]))], dtype=float)
+            ci[0] = float(np.clip(ci[0], 0, H - 1))
+            ci[1] = float(np.clip(ci[1], 0, W - 1))
+            return ci
+
+        # Top-K抽出
+        flat = S.ravel()
+        K = int(max(1, min(cfg.wp_topk, flat.size)))
+
+        # np.argpartitionで上位Kのindexを取る（高速）
+        idx_topk = np.argpartition(flat, -K)[-K:]
+        vals = flat[idx_topk]
+
+        # -inf混入を除去
+        ok = np.isfinite(vals)
+        idx_topk = idx_topk[ok]
+        vals = vals[ok]
+
+        if len(vals) == 0:
+            ci = np.array([int(round(self.pos[0])), int(round(self.pos[1]))], dtype=float)
+            return ci
+
+        ii, jj = np.unravel_index(idx_topk, (H, W))
+        pts = np.stack([ii.astype(float), jj.astype(float)], axis=1)
+
+        # 重み（scoreが負もあり得るので、最小を引いて正にしてから power）
+        vmin = float(np.min(vals))
+        w = vals - vmin + 1e-12
+        if cfg.wp_power is not None and cfg.wp_power != 1.0:
+            w = w ** float(cfg.wp_power)
+
+        wsum = float(np.sum(w))
+        if wsum <= 1e-12:
+            # 最後の保険：最大点
+            ti, tj = np.unravel_index(int(np.nanargmax(flat)), (H, W))
+            return np.array([float(ti), float(tj)], dtype=float)
+
+        centroid = (w[:, None] * pts).sum(axis=0) / wsum
+        centroid[0] = float(np.clip(centroid[0], 0, H - 1))
+        centroid[1] = float(np.clip(centroid[1], 0, W - 1))
+        return centroid.astype(float)
+
 
     # ---------------- unified waypoint decision ----------------
 
@@ -1111,7 +1196,14 @@ def main(visualize: bool = False):
         dir_forward_shift=0.0,
         dir_mode="sum",
         dir_normalize=True,
-    )
+
+        # ----- waypoint smoothing: Top-K centroid -----
+        wp_use_topk_centroid = True,
+        wp_topk = 80,                 # 例: 30〜200くらいで調整
+        wp_min_dist = 5.0,          # 現在位置の近すぎを除外（スタック対策）
+        wp_power = 1.0,             # 重み = score^power（>1で尖らせる）
+
+        )
 
     run_name = _make_run_name(RUN_NAME)
     _ensure_dir(RESULTS_DIR)
