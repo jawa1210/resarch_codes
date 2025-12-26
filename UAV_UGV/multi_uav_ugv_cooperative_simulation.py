@@ -1138,11 +1138,8 @@ def main(visualize: bool = False):
         cbf_j_alpha=1.0,
         cbf_j_gamma=3.0,
 
-        signal_mode="gp_logistic_prob",
-        uav_waypoint_signal="prob_ambiguity",
         # UGV reward map signal
         signal_mode="gp_logistic_prob",    # ★ "gp_mean" / "gp_logistic_prob"
-
         # ★UAV waypoint signal
         uav_waypoint_signal="gp_var",  # ★ "gp_var" / "prob_ambiguity"
 
@@ -1158,7 +1155,7 @@ def main(visualize: bool = False):
 
         wp_use_topk_centroid=True,
         wp_topk=80,
-        wp_min_dist=0.0,
+        wp_min_dist=5.0,
         wp_power=1.0,
 
         # ★ここを変えるだけでUGV周期が変わる
