@@ -13,6 +13,7 @@ import matplotlib.patheffects as pe
 from matplotlib.colors import to_rgba
 
 from qpsolvers import solve_qp
+from collections import deque
 
 
 # ============================================================
@@ -45,11 +46,6 @@ class solver:
         G = np.zeros((m, dim), dtype=float)
         h = np.zeros((m,), dtype=float)
 
-        for i, ((bJ, gx, gy), slack_coef) in enumerate(zip(self.cbf_list, self.slack_list)):
-            G[i, 0] = -gx
-            G[i, 1] = -gy
-            G[i, 2 + i] = slack_coef
-            h[i] = bJ
 
         P = np.zeros((dim, dim), dtype=float)
         P[0, 0] = 2.0 * self.P_co
@@ -407,6 +403,55 @@ class UGVController:
             pos = nxt
         return path
 
+    def reachable_unvisited_mask(
+        self,
+        depth: int,
+        allowed_mask: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """
+        UGVがdepthステップ以内に到達可能なセル（4近傍）で、
+        かつ、まだvisitedでないセルのmaskを返す。
+        allowed_mask があればその範囲内に制限（UGV Voronoi用）。
+        """
+        H = W = self.grid_size
+        mask = np.zeros((H, W), dtype=bool)
+
+        sy, sx = int(self.position[0]), int(self.position[1])
+
+        def ok(i, j):
+            if not (0 <= i < H and 0 <= j < W):
+                return False
+            if allowed_mask is not None and (not bool(allowed_mask[i, j])):
+                return False
+            return True
+
+        dist = -np.ones((H, W), dtype=int)
+        q = deque()
+
+        if ok(sy, sx):
+            dist[sy, sx] = 0
+            q.append((sy, sx))
+
+        while q:
+            y, x = q.popleft()
+            d = dist[y, x]
+            if d >= depth:
+                continue
+            for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+                ny, nx = y + dy, x + dx
+                if not ok(ny, nx):
+                    continue
+                if dist[ny, nx] != -1:
+                    continue
+                dist[ny, nx] = d + 1
+                q.append((ny, nx))
+
+        # depth以内に到達可能かつ未踏
+        reach = (dist != -1)
+        mask = reach & (~self.visited)
+
+        return mask
+
 
 class UGVFleet:
     def __init__(self, ugvs: list[UGVController]):
@@ -557,13 +602,73 @@ class UGVFleet:
             W_all /= float(W_all.max())
         return W_all
 
+    def target_cell_max_Aeff_in_reachable(
+        self,
+        ugv_idx: int,
+        A_eff: np.ndarray,
+        depth: int,
+    ) -> Optional[np.ndarray]:
+        """
+        指定UGVについて
+        (depth以内到達可能) & (未踏) & (UGV Voronoi内)
+        の範囲でA_eff最大セルを返す。無ければNone。
+        """
+        if ugv_idx < 0 or ugv_idx >= len(self.ugvs):
+            return None
+
+        ugv = self.ugvs[ugv_idx]
+        H, W = A_eff.shape
+
+        # UGV Voronoi がまだなら作る
+        if (not self.voronoi_masks) or (len(self.voronoi_masks) != len(self.ugvs)):
+            self.compute_voronoi(H, W)
+
+        allowed = self.voronoi_masks[ugv_idx] if self.voronoi_masks else None
+        m = ugv.reachable_unvisited_mask(depth=depth, allowed_mask=allowed)
+
+        if not np.any(m):
+            return None
+
+        S = A_eff.copy()
+        S[~m] = -np.inf
+        if not np.isfinite(S).any():
+            return None
+
+        yi, xj = np.unravel_index(int(np.nanargmax(S)), S.shape)
+        return np.array([float(yi), float(xj)], dtype=float)
+    
+    def best_amb_cell_in_reachable_set(
+        self,
+        amb_map: np.ndarray,          # fused_amb
+        step_horizon: int = 8,        # ugv_depth
+        require_unvisited: bool = True
+    ) -> Optional[np.ndarray]:
+        best = None
+        best_val = -np.inf
+
+        for k, ugv in enumerate(self.ugvs):
+            path = self.planned_paths[k] if k < len(self.planned_paths) else []
+            # 到達可能集合：planned_path（なければ現在位置だけ）
+            cand = path[:step_horizon] if path else [ugv.position]
+
+            for cell in cand:
+                i, j = int(cell[0]), int(cell[1])
+                if require_unvisited and bool(ugv.visited[i, j]):
+                    continue
+                v = float(amb_map[i, j])
+                if v > best_val:
+                    best_val = v
+                    best = np.array([i, j], dtype=float)
+
+        return best
+
 
 # ============================================================
 # 4) UAV config (all flags)
 # ============================================================
 
 WaypointMode = Literal["miyashita", "suenaga_dp", "ugv_future_point", "common_weighted"]
-NominalMode = Literal["to_waypoint", "to_ugv_future"]
+NominalMode = Literal["to_waypoint", "to_ugv_future", "to_ugv_reachable_best_amb"]
 CommonMapMode = Literal["point", "direction"]
 SignalMode = Literal["gp_mean", "gp_logistic_prob"]
 UAVWaypointSignal = Literal["gp_var", "prob_ambiguity"]
@@ -1017,19 +1122,29 @@ class UAVController:
             use_voronoi=cfg.use_voronoi
         )
 
-    def _compute_nominal(self, waypoint: np.ndarray) -> np.ndarray:
+    def _compute_nominal(self, waypoint: np.ndarray, fused_amb: Optional[np.ndarray] = None) -> np.ndarray:
         cfg = self.cfg
-
-        # デフォルト：追跡点なし
         self.current_chase_point = None
+
+        if cfg.nominal_mode == "to_ugv_reachable_best_amb":
+            if fused_amb is None:
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            tgt = self.ugv_fleet.best_amb_cell_in_reachable_set(
+                amb_map=fused_amb,
+                step_horizon=cfg.dir_num_steps,   # ugv_depthと揃えるならここ
+                require_unvisited=True
+            )
+            if tgt is None:
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            self.current_chase_point = tgt.copy()
+            return -cfg.k_ugv * (self.pos - tgt)
 
         if cfg.nominal_mode == "to_ugv_future":
             cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
             ugv_future = np.array([cy, cx], dtype=float)
-
-            # ★追いかけている点を保存（可視化用）
             self.current_chase_point = ugv_future.copy()
-
             return -cfg.k_ugv * (self.pos - ugv_future)
 
         return -cfg.k_pp * (self.pos - waypoint)
@@ -1063,8 +1178,9 @@ class UAVController:
                 return np.array(path[idx], dtype=float)
         return ugv.position.astype(float)
 
-
-        
+    def set_effective_maps(self, V_eff: Optional[np.ndarray], A_eff: Optional[np.ndarray]):
+        self._V_eff_for_uav = None if V_eff is None else V_eff.copy()
+        self._A_eff_for_uav = None if A_eff is None else A_eff.copy()
 
     def calc(self, env_fn: Callable[[np.ndarray], List[Tuple[np.ndarray, float]]]):
         cfg = self.cfg
@@ -1082,7 +1198,7 @@ class UAVController:
         waypoint = self._choose_waypoint(V_for_wp)
         self.current_waypoint = waypoint
 
-        v_nom = self._compute_nominal(waypoint)
+        v_nom = self._compute_nominal(waypoint, fused_amb=fused_amb_here)
         nu_nom = (v_nom - self.v) / cfg.control_period
 
         if not cfg.use_cbf:
@@ -1151,7 +1267,7 @@ def main(visualize: bool = False):
     rbf_sigma = 2.0
 
     RESULTS_DIR = "results"
-    RUN_NAME = None
+    RUN_NAME = "miyashita01"
     AUTO_INCREMENT = True
 
     cfg = UAVConfig(
@@ -1169,7 +1285,8 @@ def main(visualize: bool = False):
         # Nominal mode (choose ONE)
         # ------------------------------------------------------------
         #nominal_mode="to_waypoint",
-        nominal_mode="to_ugv_future",
+        #nominal_mode="to_ugv_future", 
+        nominal_mode="to_ugv_reachable_best_amb",
 
         use_voronoi=True,
 
@@ -1402,6 +1519,9 @@ def main(visualize: bool = False):
         fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
         fused_amb = fused_prob * (1.0 - fused_prob)
 
+        for uav in uavs:
+            uav.fused_amb_for_nominal = fused_amb
+
         ugv_fleet.compute_voronoi(grid_size, grid_size)
         ugv_E = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
         ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth, ambiguity_map=fused_amb)
@@ -1431,11 +1551,12 @@ def main(visualize: bool = False):
             A_eff = fused_amb * (1.0 + cfg.ugv_weight_eta * W_common)
 
         for uav in uavs:
+            uav.set_effective_maps(V_eff=V_eff, A_eff=A_eff)
+
             if cfg.uav_waypoint_signal == "prob_ambiguity":
                 uav.ugv_weighted_var_map = None if (A_eff is None) else A_eff.copy()
             else:
                 uav.ugv_weighted_var_map = None if (V_eff is None) else V_eff.copy()
-
         for uav in uavs:
             env_fn = (lambda p, _gt=gt, _ns=noise_std: environment_function(p, _gt, noise_std=_ns))
             uav.calc(env_fn)
@@ -1502,6 +1623,9 @@ def main(visualize: bool = False):
             print(f"J={J:.3f}, True crop sum={total_crop:.3f}")
 
     if visualize:
+        fig_path = os.path.join(RESULTS_DIR, run_name + "_final.png")
+        fig.savefig(fig_path, dpi=200, bbox_inches='tight')
+        print(f"[SAVE] final figure -> {fig_path}")
         plt.ioff()
         plt.close(fig)
 
