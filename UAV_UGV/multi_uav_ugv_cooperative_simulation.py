@@ -679,6 +679,8 @@ class UAVController:
         self._voronoi_mask: Optional[np.ndarray] = None
 
         self.current_waypoint = self.pos.copy()
+        self.current_chase_point = None  # to_ugv_future のときの追跡点(ugv_future)
+
 
     def set_voronoi_mask(self, mask: np.ndarray):
         self._voronoi_mask = mask
@@ -1017,12 +1019,52 @@ class UAVController:
 
     def _compute_nominal(self, waypoint: np.ndarray) -> np.ndarray:
         cfg = self.cfg
+
+        # デフォルト：追跡点なし
+        self.current_chase_point = None
+
         if cfg.nominal_mode == "to_ugv_future":
             cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
             ugv_future = np.array([cy, cx], dtype=float)
+
+            # ★追いかけている点を保存（可視化用）
+            self.current_chase_point = ugv_future.copy()
+
             return -cfg.k_ugv * (self.pos - ugv_future)
 
         return -cfg.k_pp * (self.pos - waypoint)
+
+
+    def _find_ugv_in_my_voronoi(self) -> Optional[int]:
+        """自分のVoronoi領域に入っているUGVのindexを返す（いなければNone）"""
+        if (self._voronoi_mask is None) or (not self.cfg.use_voronoi):
+            return None
+
+        H = W = self.grid_size
+        best_k = None
+        best_d = np.inf
+
+        for k, ugv in enumerate(self.ugv_fleet.ugvs):
+            yi, xj = int(ugv.position[0]), int(ugv.position[1])
+            if 0 <= yi < H and 0 <= xj < W and bool(self._voronoi_mask[yi, xj]):
+                d = float(np.linalg.norm(self.pos - ugv.position.astype(float)))
+                if d < best_d:
+                    best_d = d
+                    best_k = k
+        return best_k
+    
+    def _ugv_future_point_by_index(self, ugv_idx: int, step_offset: int) -> np.ndarray:
+        """指定UGVの planned_path の step_offset 点（なければ現在位置）"""
+        ugv = self.ugv_fleet.ugvs[ugv_idx]
+        if ugv_idx < len(self.ugv_fleet.planned_paths):
+            path = self.ugv_fleet.planned_paths[ugv_idx]
+            if path:
+                idx = min(max(step_offset - 1, 0), len(path) - 1)
+                return np.array(path[idx], dtype=float)
+        return ugv.position.astype(float)
+
+
+        
 
     def calc(self, env_fn: Callable[[np.ndarray], List[Tuple[np.ndarray, float]]]):
         cfg = self.cfg
@@ -1100,7 +1142,7 @@ def main(visualize: bool = False):
     steps = 300
 
     ugv_depth = 8
-    reward_type = 4
+    reward_type = 3
     discount_factor = 0.95
 
     gp_sensing_noise_sigma0 = 0.4
@@ -1113,7 +1155,7 @@ def main(visualize: bool = False):
     AUTO_INCREMENT = True
 
     cfg = UAVConfig(
-        use_cbf=True,
+        use_cbf=False,
 
         # ------------------------------------------------------------
         # Waypoint mode (choose ONE)
@@ -1126,15 +1168,15 @@ def main(visualize: bool = False):
         # ------------------------------------------------------------
         # Nominal mode (choose ONE)
         # ------------------------------------------------------------
-        nominal_mode="to_waypoint",
-        # nominal_mode="to_ugv_future",
+        #nominal_mode="to_waypoint",
+        nominal_mode="to_ugv_future",
 
         use_voronoi=True,
 
         # ------------------------------------------------------------
         # common weighted map (UGV path influence)
         # ------------------------------------------------------------
-        use_common_map=True,
+        use_common_map=False,
         common_map_mode="direction",
         # common_map_mode="point",
         ugv_weight_eta=0.3,
@@ -1157,8 +1199,8 @@ def main(visualize: bool = False):
         cbf_j_alpha=1.0,
         cbf_j_gamma=3.0,
 
-        signal_mode="gp_logistic_prob",
-        # signal_mode="gp_mean",
+        #signal_mode="gp_logistic_prob",
+         signal_mode="gp_mean",
 
         uav_waypoint_signal="gp_var",
         # uav_waypoint_signal="prob_ambiguity",
@@ -1178,7 +1220,7 @@ def main(visualize: bool = False):
         wp_min_dist=2.0,
         wp_power=1.0,
 
-        ugv_move_period=5,   
+        ugv_move_period=5,    #steps
     )
 
 
@@ -1248,7 +1290,7 @@ def main(visualize: bool = False):
 
         # ★凡例を外に出すので、右側に余白を作る
         fig, ax = plt.subplots(1, 2, figsize=(12.5, 5))
-        fig.subplots_adjust(right=0.78)
+        fig.subplots_adjust(left=0.22)  # ★左に凡例スペース
 
         ax[0].contour(gt, levels=[0.5], colors='white', linewidths=2, origin='lower', zorder=12)
 
@@ -1277,6 +1319,12 @@ def main(visualize: bool = False):
         waypoint_dots = [ax[0].plot([], [], 's', color=colors[i % len(colors)],
                                     markersize=6, label=f'UAV{i} WP', zorder=30 + i)[0]
                          for i in range(num_uavs)]
+        
+        # ★ to_ugv_future の追跡点（chase point）を表示するマーカー
+        chase_dots = [ax[0].plot([], [], 'X', color=colors[i % len(colors)],
+                                markersize=8, label=f'UAV{i} chase', zorder=35 + i)[0]
+                    for i in range(num_uavs)]
+
 
         ugv_plan_lines = []
         ugv_plan_targets = []
@@ -1304,12 +1352,13 @@ def main(visualize: bool = False):
         handles, labels = ax[0].get_legend_handles_labels()
         ax[0].legend(
             handles, labels,
-            loc='upper left',
-            bbox_to_anchor=(1.02, 1.0),
+            loc='upper right',
+            bbox_to_anchor=(-0.02, 1.0),  # ★左外へ
             borderaxespad=0.0,
             frameon=True,
             fontsize=9
         )
+
     else:
         fig = ax = im_mean = im_var = None
         uav_dots = uav_lines = ugv_lines = ugv_dots = waypoint_dots = []
@@ -1415,8 +1464,18 @@ def main(visualize: bool = False):
                 pu = np.array(trajs_uav[i])
                 uav_lines[i].set_data(pu[:, 1], pu[:, 0])
                 uav_dots[i].set_data([uav.pos[1]], [uav.pos[0]])
+
+                # waypoint（宮下などの waypoint）
                 wp = uav.current_waypoint
                 waypoint_dots[i].set_data(wp[1], wp[0])
+
+                # ★ chase point（to_ugv_future の追跡点）
+                cp = uav.current_chase_point
+                if cp is None:
+                    chase_dots[i].set_data([], [])
+                else:
+                    chase_dots[i].set_data([cp[1]], [cp[0]])
+
 
             for i, ugv in enumerate(ugvs):
                 trajs_ugv[i].append(ugv.position.copy())
