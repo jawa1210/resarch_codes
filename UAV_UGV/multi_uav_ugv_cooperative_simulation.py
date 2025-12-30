@@ -219,8 +219,8 @@ def environment_function(pos: np.ndarray, true_map: np.ndarray, noise_std: float
     H, W = true_map.shape
     observations = []
 
-    for di in (-4, 0, 4):
-        for dj in (-4, 0, 4):
+    for di in (-2, 0, 2):
+        for dj in (-2, 0, 2):
             i, j = i0 + di, j0 + dj
             if not (0 <= i < H and 0 <= j < W):
                 continue
@@ -987,11 +987,13 @@ class UAVController:
             )
 
         if cfg.waypoint_mode == "miyashita":
+            V_use = self.ugv_weighted_var_map if (self.ugv_weighted_var_map is not None) else V_map
             return self.path_generation_for_uav(
-                var_map=V_map,
+                var_map=V_use,
                 d0=cfg.d0,
                 use_voronoi=cfg.use_voronoi
             )
+
 
         if cfg.waypoint_mode == "ugv_future_point":
             cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
@@ -1102,7 +1104,7 @@ def main(visualize: bool = False):
     discount_factor = 0.95
 
     gp_sensing_noise_sigma0 = 0.4
-    gp_max_basis = 100
+    gp_max_basis = 150
     gp_threshold_delta = 0.05
     rbf_sigma = 2.0
 
@@ -1112,7 +1114,7 @@ def main(visualize: bool = False):
 
     cfg = UAVConfig(
         use_cbf=True,
-        waypoint_mode="common_weighted",
+        waypoint_mode="miyashita",
         nominal_mode="to_waypoint",
         use_voronoi=True,
 
@@ -1132,7 +1134,7 @@ def main(visualize: bool = False):
 
         k_pp=2.0,
         k_ugv=2.0,
-        v_limit=25.0,
+        v_limit=5.0,
         control_period=0.1,
 
         cbf_j_alpha=1.0,
@@ -1153,9 +1155,9 @@ def main(visualize: bool = False):
         dir_mode="sum",
         dir_normalize=True,
 
-        wp_use_topk_centroid=True,
+        wp_use_topk_centroid=False,
         wp_topk=80,
-        wp_min_dist=5.0,
+        wp_min_dist=2.0,
         wp_power=1.0,
 
         # ★ここを変えるだけでUGV周期が変わる
