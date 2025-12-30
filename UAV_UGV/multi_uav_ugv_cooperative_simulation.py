@@ -247,10 +247,10 @@ def generate_ground_truth_map(grid_size=20):
         if i1 > i0 and j1 > j0:
             gt[i0:i1, j0:j1] = val
 
-    rect(0.30, 0.80, 0.06, 0.46, 1.0)
-    rect(0.20, 0.70, 0.60, 0.92, 1.0)
+    rect(0.30, 0.70, 0.06, 0.26, 1.0)
+    rect(0.20, 0.50, 0.60, 0.92, 1.0)
     rect(0.80, 0.95, 0.70, 0.90, 1.0)
-    rect(0.10, 0.40, 0.10, 0.40, 1.0)
+    rect(0.10, 0.30, 0.10, 0.30, 1.0)
 
     return gt
 
@@ -1093,11 +1093,11 @@ visualize = True
 
 
 def main(visualize: bool = False):
-    grid_size = 50
+    grid_size = 30
     noise_std = 0.5
     num_uavs = 3
     num_ugvs = 2
-    steps = 600
+    steps = 300
 
     ugv_depth = 8
     reward_type = 4
@@ -1114,20 +1114,37 @@ def main(visualize: bool = False):
 
     cfg = UAVConfig(
         use_cbf=True,
+
+        # ------------------------------------------------------------
+        # Waypoint mode (choose ONE)
+        # ------------------------------------------------------------
         waypoint_mode="miyashita",
+        # waypoint_mode="suenaga_dp",
+        # waypoint_mode="ugv_future_point",
+        # waypoint_mode="common_weighted",
+
+        # ------------------------------------------------------------
+        # Nominal mode (choose ONE)
+        # ------------------------------------------------------------
         nominal_mode="to_waypoint",
+        # nominal_mode="to_ugv_future",
+
         use_voronoi=True,
 
+        # ------------------------------------------------------------
+        # common weighted map (UGV path influence)
+        # ------------------------------------------------------------
         use_common_map=True,
         common_map_mode="direction",
+        # common_map_mode="point",
         ugv_weight_eta=0.3,
 
         d0=5.0,
         ugv_future_path_sigma=5.0,
         step_of_ugv_path_used=6,
 
-        ring_d_star=10.0,
-        ring_sigma=5.0,
+        ring_d_star=8.0,     # ★ grid小さくするならリングも縮める（あとで微調整）
+        ring_sigma=4.0,
 
         suenaga_rho=0.95,
         suenaga_depth=5,
@@ -1140,29 +1157,30 @@ def main(visualize: bool = False):
         cbf_j_alpha=1.0,
         cbf_j_gamma=3.0,
 
-        # UGV reward map signal
-        signal_mode="gp_logistic_prob",    # ★ "gp_mean" / "gp_logistic_prob"
-        # ★UAV waypoint signal
-        uav_waypoint_signal="gp_var",  # ★ "gp_var" / "prob_ambiguity"
+        signal_mode="gp_logistic_prob",
+        # signal_mode="gp_mean",
+
+        uav_waypoint_signal="gp_var",
+        # uav_waypoint_signal="prob_ambiguity",
 
         map_publish_period=0.5,
 
         dir_num_steps=ugv_depth,
-        dir_ell_u=8.0,
-        dir_ell_perp=4.0,
+        dir_ell_u=6.0,        # ★ grid縮小に合わせて少し縮めるのが無難
+        dir_ell_perp=3.0,
         dir_eta_forward=2.0,
         dir_forward_shift=0.0,
         dir_mode="sum",
         dir_normalize=True,
 
         wp_use_topk_centroid=False,
-        wp_topk=80,
+        wp_topk=60,           # ★ grid小さくしたらtopkも縮める
         wp_min_dist=2.0,
         wp_power=1.0,
 
-        # ★ここを変えるだけでUGV周期が変わる
-        ugv_move_period=5,  # 5stepに1回動く
+        ugv_move_period=5,   
     )
+
 
     run_name = _make_run_name(RUN_NAME)
     _ensure_dir(RESULTS_DIR)
