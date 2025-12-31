@@ -1281,11 +1281,11 @@ def main(visualize: bool = False):
     rbf_sigma = 2.0
 
     RESULTS_DIR = "results"
-    RUN_NAME = "miyashita_amb01"
+    RUN_NAME = "direction_weighted"
     AUTO_INCREMENT = True
 
     cfg = UAVConfig(
-        use_cbf=False,
+        use_cbf=True,
 
         # ------------------------------------------------------------
         # Waypoint mode (choose ONE)
@@ -1298,16 +1298,16 @@ def main(visualize: bool = False):
         # ------------------------------------------------------------
         # Nominal mode (choose ONE)
         # ------------------------------------------------------------
-        #nominal_mode="to_waypoint",
+        nominal_mode="to_waypoint",
         #nominal_mode="to_ugv_future", 
-        nominal_mode="to_ugv_reachable_best_amb",
+        #nominal_mode="to_ugv_reachable_best_amb",
 
         use_voronoi=True,
 
         # ------------------------------------------------------------
         # common weighted map (UGV path influence)
         # ------------------------------------------------------------
-        use_common_map=False,
+        use_common_map=True,
         common_map_mode="direction",
         # common_map_mode="point",
         ugv_weight_eta=0.3,
@@ -1331,7 +1331,7 @@ def main(visualize: bool = False):
         cbf_j_gamma=3.0,
 
         signal_mode="gp_logistic_prob",
-        # signal_mode="gp_mean",
+        #signal_mode="gp_mean",
 
         uav_waypoint_signal="gp_var",
         # uav_waypoint_signal="prob_ambiguity",
@@ -1359,7 +1359,7 @@ def main(visualize: bool = False):
     _ensure_dir(RESULTS_DIR)
 
     base = os.path.join(RESULTS_DIR, run_name)
-    csv_cbf_path = _unique_path(base + "__cbf", ".csv", AUTO_INCREMENT)
+    csv_cbf_path = _unique_path(base + "data",  ".csv", AUTO_INCREMENT)
     csv_param_path = _unique_path(base + "__params", ".csv", AUTO_INCREMENT)
 
     print(f"[SAVE] cbf csv   -> {csv_cbf_path}")
