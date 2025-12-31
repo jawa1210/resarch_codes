@@ -324,6 +324,9 @@ class UGVController:
         elif reward_type == 5:
             return (k1 * E + k2 * U) / (d ** 2 + epsilon)
 
+        elif reward_type == 6:
+            return E
+
         else:
             return 0.0
 
@@ -1130,16 +1133,24 @@ class UAVController:
             if fused_amb is None:
                 return -cfg.k_pp * (self.pos - waypoint)
 
-            tgt = self.ugv_fleet.best_amb_cell_in_reachable_set(
-                amb_map=fused_amb,
-                step_horizon=cfg.dir_num_steps,   # ugv_depthと揃えるならここ
-                require_unvisited=True
+            # ★ まず「自分のVoronoiにUGVがいるか」判定
+            ugv_idx = self._find_ugv_in_my_voronoi()
+            if ugv_idx is None:
+                # ★ いなければ miyashita waypoint に従う
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            # ★ いるなら、そのUGVに限定して reachable の best amb を取る
+            tgt = self.ugv_fleet.target_cell_max_Aeff_in_reachable(
+                ugv_idx=ugv_idx,
+                A_eff=fused_amb,
+                depth=cfg.dir_num_steps
             )
             if tgt is None:
                 return -cfg.k_pp * (self.pos - waypoint)
 
             self.current_chase_point = tgt.copy()
             return -cfg.k_ugv * (self.pos - tgt)
+
 
         if cfg.nominal_mode == "to_ugv_future":
             cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
@@ -1261,7 +1272,7 @@ def main(visualize: bool = False):
     steps = 300
 
     ugv_depth = 8
-    reward_type = 3
+    reward_type = 6
     discount_factor = 0.95
 
     gp_sensing_noise_sigma0 = 0.4
@@ -1270,7 +1281,7 @@ def main(visualize: bool = False):
     rbf_sigma = 2.0
 
     RESULTS_DIR = "results"
-    RUN_NAME = "miyashita01"
+    RUN_NAME = "miyashita_amb01"
     AUTO_INCREMENT = True
 
     cfg = UAVConfig(
@@ -1319,8 +1330,8 @@ def main(visualize: bool = False):
         cbf_j_alpha=1.0,
         cbf_j_gamma=3.0,
 
-        #signal_mode="gp_logistic_prob",
-         signal_mode="gp_mean",
+        signal_mode="gp_logistic_prob",
+        # signal_mode="gp_mean",
 
         uav_waypoint_signal="gp_var",
         # uav_waypoint_signal="prob_ambiguity",
@@ -1591,15 +1602,18 @@ def main(visualize: bool = False):
                 uav_dots[i].set_data([uav.pos[1]], [uav.pos[0]])
 
                 # waypoint（宮下などの waypoint）
-                wp = uav.current_waypoint
-                waypoint_dots[i].set_data(wp[1], wp[0])
-
-                # ★ chase point（to_ugv_future の追跡点）
-                cp = uav.current_chase_point
-                if cp is None:
-                    chase_dots[i].set_data([], [])
+                # 表示切り替え
+                if uav.current_chase_point is not None:
+                    # nominalで追っている点だけ表示
+                    cp = uav.current_chase_point
+                    chase_dots[i].set_data(cp[1], cp[0])
+                    waypoint_dots[i].set_data([], [])
                 else:
-                    chase_dots[i].set_data([cp[1]], [cp[0]])
+                    # waypointのみ表示
+                    wp = uav.current_waypoint
+                    waypoint_dots[i].set_data(wp[1], wp[0])
+                    chase_dots[i].set_data([], [])
+
 
 
             for i, ugv in enumerate(ugvs):
