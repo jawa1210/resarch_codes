@@ -1182,7 +1182,9 @@ class UAVController:
         self._V_eff_for_uav = None if V_eff is None else V_eff.copy()
         self._A_eff_for_uav = None if A_eff is None else A_eff.copy()
 
-    def calc(self, env_fn: Callable[[np.ndarray], List[Tuple[np.ndarray, float]]]):
+    def calc(self, env_fn: Callable[[np.ndarray], List[Tuple[np.ndarray, float]]],
+         fused_amb: Optional[np.ndarray] = None):
+
         cfg = self.cfg
 
         self.update_map(env_fn)
@@ -1198,7 +1200,8 @@ class UAVController:
         waypoint = self._choose_waypoint(V_for_wp)
         self.current_waypoint = waypoint
 
-        v_nom = self._compute_nominal(waypoint, fused_amb=fused_amb_here)
+        v_nom = self._compute_nominal(waypoint, fused_amb=fused_amb)
+
         nu_nom = (v_nom - self.v) / cfg.control_period
 
         if not cfg.use_cbf:
@@ -1559,7 +1562,8 @@ def main(visualize: bool = False):
                 uav.ugv_weighted_var_map = None if (V_eff is None) else V_eff.copy()
         for uav in uavs:
             env_fn = (lambda p, _gt=gt, _ns=noise_std: environment_function(p, _gt, noise_std=_ns))
-            uav.calc(env_fn)
+            uav.calc(env_fn, fused_amb=fused_amb)
+
 
         # ★UGVは ugv_move_period step に1回だけ動かす
         ugv_period = max(int(cfg.ugv_move_period), 1)
