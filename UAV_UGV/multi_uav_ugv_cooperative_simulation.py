@@ -671,7 +671,13 @@ class UGVFleet:
 # ============================================================
 
 WaypointMode = Literal["miyashita", "suenaga_dp", "ugv_future_point", "common_weighted"]
-NominalMode = Literal["to_waypoint", "to_ugv_future", "to_ugv_reachable_best_amb"]
+NominalMode = Literal[
+    "to_waypoint",
+    "to_ugv_future",
+    "to_ugv_reachable_best_amb",
+    "to_ugv_future_if_in_voronoi_else_waypoint",  # ★追加
+]
+
 CommonMapMode = Literal["point", "direction"]
 SignalMode = Literal["gp_mean", "gp_logistic_prob"]
 UAVWaypointSignal = Literal["gp_var", "prob_ambiguity"]
@@ -1133,13 +1139,10 @@ class UAVController:
             if fused_amb is None:
                 return -cfg.k_pp * (self.pos - waypoint)
 
-            # ★ まず「自分のVoronoiにUGVがいるか」判定
             ugv_idx = self._find_ugv_in_my_voronoi()
             if ugv_idx is None:
-                # ★ いなければ miyashita waypoint に従う
                 return -cfg.k_pp * (self.pos - waypoint)
 
-            # ★ いるなら、そのUGVに限定して reachable の best amb を取る
             tgt = self.ugv_fleet.target_cell_max_Aeff_in_reachable(
                 ugv_idx=ugv_idx,
                 A_eff=fused_amb,
@@ -1151,10 +1154,22 @@ class UAVController:
             self.current_chase_point = tgt.copy()
             return -cfg.k_ugv * (self.pos - tgt)
 
-
         if cfg.nominal_mode == "to_ugv_future":
             cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
             ugv_future = np.array([cy, cx], dtype=float)
+            self.current_chase_point = ugv_future.copy()
+            return -cfg.k_ugv * (self.pos - ugv_future)
+
+        # ★追加：Voronoi内にUGVがいるときだけ追う
+        if cfg.nominal_mode == "to_ugv_future_if_in_voronoi_else_waypoint":
+            ugv_idx = self._find_ugv_in_my_voronoi()
+            if ugv_idx is None:
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            ugv_future = self._ugv_future_point_by_index(
+                ugv_idx=ugv_idx,
+                step_offset=cfg.step_of_ugv_path_used
+            )
             self.current_chase_point = ugv_future.copy()
             return -cfg.k_ugv * (self.pos - ugv_future)
 
@@ -1299,6 +1314,7 @@ def main(visualize: bool = False):
         # Nominal mode (choose ONE)
         # ------------------------------------------------------------
         nominal_mode="to_waypoint",
+        #nominal_mode="to_ugv_future_if_in_voronoi_else_waypoint",
         #nominal_mode="to_ugv_future", 
         #nominal_mode="to_ugv_reachable_best_amb",
 
