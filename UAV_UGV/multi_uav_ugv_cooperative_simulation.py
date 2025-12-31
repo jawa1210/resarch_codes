@@ -1500,6 +1500,23 @@ def main(visualize: bool = False):
     J_history = []
     true_sum_history = []
 
+    ugv_log = {
+        "step": [],
+        # UGV0,UGV1,... のログ列を動的に追加していく（num_ugvsに追従）
+    }
+
+    def _ensure_ugv_cols(k: int):
+        base_cols = [
+            f"ugv{k}_y", f"ugv{k}_x",
+            f"ugv{k}_mu", f"ugv{k}_var", f"ugv{k}_prob",
+            f"ugv{k}_visited_count",
+            f"ugv{k}_visited_mu_sum", f"ugv{k}_visited_var_sum", f"ugv{k}_visited_prob_sum",
+        ]
+        for c in base_cols:
+            if c not in ugv_log:
+                ugv_log[c] = []
+
+
     for step in range(steps):
         print(f"=== Step {step} ===")
 
@@ -1532,6 +1549,33 @@ def main(visualize: bool = False):
         fused_var = np.mean(np.stack(var_maps, axis=0), axis=0)
         fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
         fused_amb = fused_prob * (1.0 - fused_prob)
+
+                # ---- UGVが通った(visited) mean/var/prob をログ ----
+        ugv_log["step"].append(step)
+        for k, ugv in enumerate(ugvs):
+            _ensure_ugv_cols(k)
+
+            yi, xj = int(ugv.position[0]), int(ugv.position[1])
+
+            # 現在セルの値
+            mu_now = float(fused_mean[yi, xj])
+            var_now = float(fused_var[yi, xj])
+            prob_now = float(fused_prob[yi, xj])
+
+            ugv_log[f"ugv{k}_y"].append(yi)
+            ugv_log[f"ugv{k}_x"].append(xj)
+            ugv_log[f"ugv{k}_mu"].append(mu_now)
+            ugv_log[f"ugv{k}_var"].append(var_now)
+            ugv_log[f"ugv{k}_prob"].append(prob_now)
+
+            # visited集合（通ったセル全部）の累積
+            m = ugv.visited.astype(bool)
+            cnt = int(np.sum(m))
+            ugv_log[f"ugv{k}_visited_count"].append(cnt)
+            ugv_log[f"ugv{k}_visited_mu_sum"].append(float(np.sum(fused_mean[m])) if cnt > 0 else 0.0)
+            ugv_log[f"ugv{k}_visited_var_sum"].append(float(np.sum(fused_var[m])) if cnt > 0 else 0.0)
+            ugv_log[f"ugv{k}_visited_prob_sum"].append(float(np.sum(fused_prob[m])) if cnt > 0 else 0.0)
+
 
         for uav in uavs:
             uav.fused_amb_for_nominal = fused_amb
@@ -1658,7 +1702,13 @@ def main(visualize: bool = False):
         'J': J_history,
         'true_crop_sum': true_sum_history
     })
+
+    # UGVログを横に結合（stepで揃える）
+    df_ugv = pd.DataFrame(ugv_log)
+    df = df.merge(df_ugv, on="step", how="left")
+
     df.to_csv(csv_cbf_path, index=False)
+
 
     gp0 = uavs[0].gp
     params_info = {
@@ -1714,8 +1764,9 @@ def main(visualize: bool = False):
         'final_J': float(J_history[-1]) if len(J_history) > 0 else np.nan,
     }
 
-    pd.DataFrame([params_info]).to_csv('cbf_flag_params.csv', index=False)
-    print("Saved: cbf_flag_all.csv, cbf_flag_params.csv")
+    pd.DataFrame([params_info]).to_csv(csv_param_path, index=False)
+    print(f"[SAVE] params csv -> {csv_param_path}")
+
 
 
 if __name__ == "__main__":
