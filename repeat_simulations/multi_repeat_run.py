@@ -5,17 +5,16 @@
 Multi-run (N=10) simulation runner with:
 - External parameter config (YAML/JSON) + CLI overrides
 - Per-run different UAV/UGV initial positions
-- BUT reproducible across executions (master_seed + scenario_id)
-- Per-run outputs + overall summary CSV
+- reproducible across executions (master_seed + scenario_id)
+- OUTPUT:
+    (1) ONE big data CSV  (all runs, all steps)
+    (2) ONE params CSV    (one row per run)
 
 Usage:
   pip install pyyaml qpsolvers quadprog numpy pandas matplotlib
 
   python3 sim_multi.py --config params.yaml --num_runs 10 --master_seed 1234 --scenario_id base
-  python3 sim_multi.py --config params.yaml --num_runs 10 --master_seed 1234 --scenario_id compare1 --visualize
-
-Notes:
-- visualize is recommended ONLY for single run (e.g. --num_runs 1), otherwise slow.
+  python3 sim_multi.py --config params.yaml --num_runs 1 --master_seed 1234 --scenario_id debug --visualize
 """
 
 import os
@@ -89,7 +88,8 @@ def _stable_int_seed(*items) -> int:
     return int(h[:8], 16)
 
 
-def make_rng(master_seed: int, scenario_id: str, run_idx: int, grid_size: int, num_uavs: int, num_ugvs: int) -> np.random.Generator:
+def make_rng(master_seed: int, scenario_id: str, run_idx: int,
+             grid_size: int, num_uavs: int, num_ugvs: int) -> np.random.Generator:
     seed = _stable_int_seed(master_seed, scenario_id, run_idx, grid_size, num_uavs, num_ugvs)
     return np.random.default_rng(seed)
 
@@ -163,11 +163,9 @@ class solver:
         G = np.zeros((m, dim), dtype=float)
         h = np.zeros((m,), dtype=float)
 
-        # IMPORTANT:
-        # You were not filling G/h in your snippet; keep as-is if your solver expects feasibility elsewhere.
-        # If you want actual constraints, fill:
-        #   G[i,0] = -gx; G[i,1] = -gy; G[i,2+i]= -1; h[i] = bJ (or similar)
-        # Here we keep your behavior (likely placeholder) to match previous runs.
+        # NOTE:
+        # ここは「本当にCBF制約を入れるなら」G/h を埋める必要があります。
+        # 現状の挙動を壊さないため、あなたの元コード同様 placeholder のままです。
 
         P = np.zeros((dim, dim), dtype=float)
         P[0, 0] = 2.0 * self.P_co
@@ -322,7 +320,6 @@ class SparseOnlineGP:
         mu = float(self.a.dot(k_vec))
         var = float(self.kernel(x, x) + k_vec.dot(self.C.dot(k_vec)))
 
-        # logistic with variance (Jaakkola-like)
         z_raw = mu / np.sqrt(1.0 + (np.pi / 8.0) * var)
         z = float(1.0 / (1.0 + np.exp(-z_raw)))
         return mu, var, z, k_vec, self.C
@@ -332,7 +329,12 @@ class SparseOnlineGP:
 # 2) Env / Map utils
 # ============================================================
 
-def environment_function(pos: np.ndarray, true_map: np.ndarray, noise_std: float = 0.5) -> List[Tuple[np.ndarray, float]]:
+def environment_function(pos: np.ndarray, true_map: np.ndarray,
+                         rng: np.random.Generator,
+                         noise_std: float = 0.5) -> List[Tuple[np.ndarray, float]]:
+    """
+    ★重要: np.random ではなく rng を使う（再現性）
+    """
     i0, j0 = int(round(pos[0])), int(round(pos[1]))
     H, W = true_map.shape
     observations = []
@@ -347,7 +349,7 @@ def environment_function(pos: np.ndarray, true_map: np.ndarray, noise_std: float
             jmin, jmax = max(0, j - 1), min(W, j + 2)
             local_patch = true_map[imin:imax, jmin:jmax]
             val = float(np.mean(local_patch))
-            noisy = float(val + np.random.normal(loc=0.0, scale=noise_std))
+            noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
             observations.append((np.array([i, j], dtype=float), noisy))
 
     return observations
@@ -436,19 +438,12 @@ class UGVController:
             delta = 0.1
             beta = 2 * np.log((np.pi ** 2) * (step ** 2) / (6 * delta))
             return E - float(np.sqrt(beta * V))
-
-        # ---- logistic versions ----
-        # reward_type=4: exploit p, penalize ambiguity p(1-p)
         elif reward_type == 4:
             return (k1 * E - k2 * U) / (d ** 2 + epsilon)
-
-        # reward_type=5: exploit p, but also a bit explore ambiguity
         elif reward_type == 5:
             return (k1 * E + k2 * U) / (d ** 2 + epsilon)
-
         elif reward_type == 6:
             return E
-
         else:
             return 0.0
 
@@ -533,14 +528,7 @@ class UGVController:
         depth: int,
         allowed_mask: Optional[np.ndarray] = None
     ) -> np.ndarray:
-        """
-        UGVがdepthステップ以内に到達可能なセル（4近傍）で、
-        かつ、まだvisitedでないセルのmaskを返す。
-        allowed_mask があればその範囲内に制限（UGV Voronoi用）。
-        """
         H = W = self.grid_size
-        mask = np.zeros((H, W), dtype=bool)
-
         sy, sx = int(self.position[0]), int(self.position[1])
 
         def ok(i, j):
@@ -572,9 +560,7 @@ class UGVController:
                 q.append((ny, nx))
 
         reach = (dist != -1)
-        mask = reach & (~self.visited)
-
-        return mask
+        return reach & (~self.visited)
 
 
 class UGVFleet:
@@ -732,11 +718,6 @@ class UGVFleet:
         A_eff: np.ndarray,
         depth: int,
     ) -> Optional[np.ndarray]:
-        """
-        指定UGVについて
-        (depth以内到達可能) & (未踏) & (UGV Voronoi内)
-        の範囲でA_eff最大セルを返す。無ければNone。
-        """
         if ugv_idx < 0 or ugv_idx >= len(self.ugvs):
             return None
 
@@ -760,30 +741,6 @@ class UGVFleet:
         yi, xj = np.unravel_index(int(np.nanargmax(S)), S.shape)
         return np.array([float(yi), float(xj)], dtype=float)
 
-    def best_amb_cell_in_reachable_set(
-        self,
-        amb_map: np.ndarray,          # fused_amb
-        step_horizon: int = 8,        # ugv_depth
-        require_unvisited: bool = True
-    ) -> Optional[np.ndarray]:
-        best = None
-        best_val = -np.inf
-
-        for k, ugv in enumerate(self.ugvs):
-            path = self.planned_paths[k] if k < len(self.planned_paths) else []
-            cand = path[:step_horizon] if path else [ugv.position]
-
-            for cell in cand:
-                i, j = int(cell[0]), int(cell[1])
-                if require_unvisited and bool(ugv.visited[i, j]):
-                    continue
-                v = float(amb_map[i, j])
-                if v > best_val:
-                    best_val = v
-                    best = np.array([i, j], dtype=float)
-
-        return best
-
 
 # ============================================================
 # 4) UAV config (all flags)
@@ -794,9 +751,8 @@ NominalMode = Literal[
     "to_waypoint",
     "to_ugv_future",
     "to_ugv_reachable_best_amb",
-    "to_ugv_future_if_in_voronoi_else_waypoint",   # ★追加
+    "to_ugv_future_if_in_voronoi_else_waypoint",
 ]
-
 CommonMapMode = Literal["point", "direction"]
 SignalMode = Literal["gp_mean", "gp_logistic_prob"]
 UAVWaypointSignal = Literal["gp_var", "prob_ambiguity"]
@@ -1239,17 +1195,12 @@ class UAVController:
         cfg = self.cfg
         self.current_chase_point = None
 
-        # -------------------------------
-        # 1) reachable-best-amb (既存)
-        # -------------------------------
         if cfg.nominal_mode == "to_ugv_reachable_best_amb":
             if fused_amb is None:
                 return -cfg.k_pp * (self.pos - waypoint)
-
             ugv_idx = self._find_ugv_in_my_voronoi()
             if ugv_idx is None:
                 return -cfg.k_pp * (self.pos - waypoint)
-
             tgt = self.ugv_fleet.target_cell_max_Aeff_in_reachable(
                 ugv_idx=ugv_idx,
                 A_eff=fused_amb,
@@ -1257,49 +1208,33 @@ class UAVController:
             )
             if tgt is None:
                 return -cfg.k_pp * (self.pos - waypoint)
-
             self.current_chase_point = tgt.copy()
             return -cfg.k_ugv * (self.pos - tgt)
 
-        # -------------------------------
-        # 2) ugv future (既存: 常に追う)
-        # -------------------------------
         if cfg.nominal_mode == "to_ugv_future":
             cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
             ugv_future = np.array([cy, cx], dtype=float)
             self.current_chase_point = ugv_future.copy()
             return -cfg.k_ugv * (self.pos - ugv_future)
 
-        # -------------------------------
-        # 3) ★新: Voronoi内にUGVがいる時だけ future を追う
-        #    いなければ waypoint に戻る
-        # -------------------------------
         if cfg.nominal_mode == "to_ugv_future_if_in_voronoi_else_waypoint":
             ugv_idx = self._find_ugv_in_my_voronoi()
             if ugv_idx is None:
                 return -cfg.k_pp * (self.pos - waypoint)
-
-            ugv_future = self._ugv_future_point_by_index(
-                ugv_idx=ugv_idx,
-                step_offset=cfg.step_of_ugv_path_used
-            )
+            # ここでは fleet の planned_path から future を取るので
+            cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
+            ugv_future = np.array([cy, cx], dtype=float)
             self.current_chase_point = ugv_future.copy()
             return -cfg.k_ugv * (self.pos - ugv_future)
 
-        # -------------------------------
-        # 4) default: waypoint
-        # -------------------------------
         return -cfg.k_pp * (self.pos - waypoint)
-
 
     def _find_ugv_in_my_voronoi(self) -> Optional[int]:
         if (self._voronoi_mask is None) or (not self.cfg.use_voronoi):
             return None
-
         H = W = self.grid_size
         best_k = None
         best_d = np.inf
-
         for k, ugv in enumerate(self.ugv_fleet.ugvs):
             yi, xj = int(ugv.position[0]), int(ugv.position[1])
             if 0 <= yi < H and 0 <= xj < W and bool(self._voronoi_mask[yi, xj]):
@@ -1367,22 +1302,32 @@ def _make_run_name(run_name: str | None) -> str:
         return run_name
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-def _unique_path(base_path_no_ext: str, ext: str, enable: bool = True) -> str:
-    if not enable:
-        return base_path_no_ext + ext
-    path = base_path_no_ext + ext
-    if not os.path.exists(path):
+def _unique_path(path: str, enable: bool = True) -> str:
+    if (not enable) or (not os.path.exists(path)):
         return path
+    root, ext = os.path.splitext(path)
     k = 1
     while True:
-        cand = f"{base_path_no_ext}_{k:03d}{ext}"
+        cand = f"{root}_{k:03d}{ext}"
         if not os.path.exists(cand):
             return cand
         k += 1
 
 
+def build_result_paths(results_dir: str, run_name: str, scenario_id: str, num_runs: int,
+                       master_seed: int | None = None, auto_increment: bool = True):
+    os.makedirs(results_dir, exist_ok=True)
+    seed_str = f"_seed{master_seed}" if master_seed is not None else ""
+    base = f"{run_name}_{scenario_id}{seed_str}"
+    data_path = os.path.join(results_dir, f"{base}_data_{num_runs}runs.csv")
+    params_path = os.path.join(results_dir, f"{base}_params_{num_runs}runs.csv")
+    data_path = _unique_path(data_path, enable=auto_increment)
+    params_path = _unique_path(params_path, enable=auto_increment)
+    return data_path, params_path
+
+
 # ============================================================
-# 7) run_once: a single simulation run (returns summary dict)
+# 7) run_once: a single simulation run (returns data_df, params_row)
 # ============================================================
 
 def run_once(
@@ -1392,8 +1337,7 @@ def run_once(
     run_idx: int,
     master_seed: int,
     scenario_id: str,
-) -> dict:
-    # --- base params ---
+) -> tuple[pd.DataFrame, dict]:
     grid_size = int(deep_get(params, "grid_size", 30))
     noise_std = float(deep_get(params, "noise_std", 0.5))
     num_uavs = int(deep_get(params, "num_uavs", 3))
@@ -1409,30 +1353,15 @@ def run_once(
     gp_threshold_delta = float(deep_get(params, "gp_threshold_delta", 0.05))
     rbf_sigma = float(deep_get(params, "rbf_sigma", 2.0))
 
-    RESULTS_DIR = str(deep_get(params, "RESULTS_DIR", "results"))
-    RUN_NAME = str(deep_get(params, "RUN_NAME", "direction_weighted"))
-    AUTO_INCREMENT = bool(deep_get(params, "AUTO_INCREMENT", True))
-
-    # ---- run-specific RNG, but reproducible across executions ----
+    # reproducible RNG per run
     rng = make_rng(master_seed, scenario_id, run_idx, grid_size, num_uavs, num_ugvs)
 
-    # Initial positions (different per run, fixed by seeds)
     uav_init, ugv_init = sample_initial_positions(rng, grid_size, num_uavs, num_ugvs)
 
-    run_name = f"{_make_run_name(RUN_NAME)}__run{run_idx:02d}"
-    _ensure_dir(RESULTS_DIR)
-    base = os.path.join(RESULTS_DIR, run_name)
+    print(f"[RUN {run_idx}] init_uav={uav_init.tolist()} init_ugv={ugv_init.tolist()}")
 
-    csv_cbf_path = _unique_path(base + "__data",  ".csv", AUTO_INCREMENT)
-    csv_param_path = _unique_path(base + "__params", ".csv", AUTO_INCREMENT)
-
-    print(f"[RUN {run_idx}] [SAVE] data   -> {csv_cbf_path}")
-    print(f"[RUN {run_idx}] [SAVE] params -> {csv_param_path}")
-
-    # ---- ground truth ----
     gt = generate_ground_truth_map(grid_size)
 
-    # ---- build UGVs ----
     ugvs = []
     for k in range(num_ugvs):
         ugv = UGVController(grid_size, reward_type=reward_type, discount_factor=discount_factor)
@@ -1443,11 +1372,10 @@ def run_once(
 
     ugv_fleet = UGVFleet(ugvs)
 
-    # ---- build UAVs ----
     uavs: list[UAVController] = []
     for k in range(num_uavs):
         p0 = uav_init[k]
-        init_obs = environment_function(p0, gt, noise_std=noise_std)
+        init_obs = environment_function(p0, gt, rng=rng, noise_std=noise_std)
         init_x = np.vstack([p for p, _ in init_obs])
         init_y = np.array([y for _, y in init_obs], dtype=float)
 
@@ -1467,7 +1395,7 @@ def run_once(
         uav.pos = p0.astype(float)
         uavs.append(uav)
 
-    # ---- visualize settings ----
+    # visualize
     colors = ['r', '#ff7f0e', 'm', 'y', 'g', 'b']
     ugv_colors = ['k', '#444444', '#111111', '#888888']
 
@@ -1539,10 +1467,9 @@ def run_once(
         vor_layers = []
         vor_cnt_lines = []
 
-    # ---- logs ----
+    # logs
     J_history = []
     true_sum_history = []
-
     ugv_log = {"step": []}
 
     def _ensure_ugv_cols(k: int):
@@ -1556,7 +1483,7 @@ def run_once(
             if c not in ugv_log:
                 ugv_log[c] = []
 
-    # ---- simulation loop ----
+    # sim loop
     for step in range(steps):
         if step % 50 == 0:
             print(f"[RUN {run_idx}] === Step {step} ===")
@@ -1591,7 +1518,7 @@ def run_once(
         fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
         fused_amb = fused_prob * (1.0 - fused_prob)
 
-        # ---- UGV visited logging ----
+        # UGV visited logging
         ugv_log["step"].append(step)
         for k, ugv in enumerate(ugvs):
             _ensure_ugv_cols(k)
@@ -1651,10 +1578,10 @@ def run_once(
                 uav.ugv_weighted_var_map = None if (V_eff is None) else V_eff.copy()
 
         for uav in uavs:
-            env_fn = (lambda p, _gt=gt, _ns=noise_std: environment_function(p, _gt, noise_std=_ns))
+            env_fn = (lambda p, _gt=gt, _ns=noise_std, _rng=rng:
+                      environment_function(p, _gt, rng=_rng, noise_std=_ns))
             uav.calc(env_fn, fused_amb=fused_amb)
 
-        # ---- UGV step (periodic) ----
         ugv_period = max(int(cfg.ugv_move_period), 1)
         if (step % ugv_period) == 0:
             ugv_fleet.step_all(ugv_E, fused_var, depth=ugv_depth, step=step + 1, ambiguity_map=fused_amb)
@@ -1712,33 +1639,29 @@ def run_once(
         if step % 100 == 0:
             print(f"[RUN {run_idx}] step={step} J={J:.3f}, True crop sum={total_crop:.3f}")
 
-    # ---- save final figure (optional) ----
     if visualize:
-        fig_path = os.path.join(RESULTS_DIR, run_name + "_final.png")
-        fig.savefig(fig_path, dpi=200, bbox_inches='tight')
-        print(f"[RUN {run_idx}] [SAVE] final figure -> {fig_path}")
         plt.ioff()
         plt.close(fig)
 
-    # ---- post-run totals (union visited across UGVs) ----
     visited_union = np.zeros_like(gt, dtype=bool)
     for u in ugvs:
         visited_union |= u.visited
     total_crop_union = float(np.sum(gt[visited_union]))
     print(f"[RUN {run_idx}] UGVs visited crop sum (GT union): {total_crop_union:.3f}")
 
+    # ---- build run data dataframe (with run_idx column) ----
     df = pd.DataFrame({
+        'run_idx': run_idx,
         'step': np.arange(len(J_history)),
         'J': J_history,
         'true_crop_sum': true_sum_history
     })
-
     df_ugv = pd.DataFrame(ugv_log)
-    df = df.merge(df_ugv, on="step", how="left")
-    df.to_csv(csv_cbf_path, index=False)
+    df_ugv["run_idx"] = run_idx
+    df = df.merge(df_ugv, on=["run_idx", "step"], how="left")
 
     gp0 = uavs[0].gp
-    params_info = {
+    params_row = {
         'run_idx': run_idx,
         'master_seed': master_seed,
         'scenario_id': scenario_id,
@@ -1779,7 +1702,6 @@ def run_once(
         'cfg.control_period': cfg.control_period,
         'cfg.cbf_j_alpha': cfg.cbf_j_alpha,
         'cfg.cbf_j_gamma': cfg.cbf_j_gamma,
-
         'cfg.ugv_move_period': cfg.ugv_move_period,
 
         'gp_sigma0': gp0.sigma0,
@@ -1795,46 +1717,18 @@ def run_once(
         'final_true_crop_sum': float(true_sum_history[-1]) if len(true_sum_history) > 0 else np.nan,
         'final_J': float(J_history[-1]) if len(J_history) > 0 else np.nan,
 
-        'init_uav_positions': uav_init.tolist(),
-        'init_ugv_positions': ugv_init.tolist(),
+        'init_uav_positions': json.dumps(uav_init.tolist(), ensure_ascii=False),
+        'init_ugv_positions': json.dumps(ugv_init.tolist(), ensure_ascii=False),
     }
 
-    pd.DataFrame([params_info]).to_csv(csv_param_path, index=False)
-    print(f"[RUN {run_idx}] [SAVE] params csv -> {csv_param_path}")
-
-    # return per-run summary for multi-run aggregation
-    return {
-        "run_idx": run_idx,
-        "master_seed": master_seed,
-        "scenario_id": scenario_id,
-        "data_csv": csv_cbf_path,
-        "params_csv": csv_param_path,
-        "final_J": params_info["final_J"],
-        "final_total_crop_union": params_info["final_total_crop_union"],
-        "case1_count": params_info["case1_count"],
-        "case2_count": params_info["case2_count"],
-        "case3_count": params_info["case3_count"],
-    }
+    return df, params_row
 
 
 # ============================================================
-# 8) multi-run main (N=10)
+# 8) multi-run main (N=10)  -> ONE data.csv + ONE params.csv
 # ============================================================
 
 def build_cfg_from_params(params: dict) -> UAVConfig:
-    # cfg.* keys can be in YAML as nested dict or dotted keys.
-    # We accept either:
-    #   cfg:
-    #     use_cbf: true
-    # or
-    #   cfg.use_cbf: true
-    def g(k, default):
-        # prefer nested dict, fallback dotted
-        v = deep_get(params, k, None)
-        if v is None:
-            v = deep_get(params, k.replace("cfg.", "cfg."), None)
-        return default if v is None else v
-
     cfg = UAVConfig(
         use_cbf=bool(deep_get(params, "cfg.use_cbf", True)),
         waypoint_mode=str(deep_get(params, "cfg.waypoint_mode", "miyashita")),
@@ -1893,21 +1787,18 @@ def main_multi():
     parser.add_argument("--master_seed", type=int, default=1234)
     parser.add_argument("--scenario_id", type=str, default="base")
     parser.add_argument("--visualize", action="store_true")
-    # simple overrides
     parser.add_argument("--set", action="append", default=[],
                         help="Override param: key=value (supports dotted keys, e.g. cfg.use_cbf=false)")
     args = parser.parse_args()
 
     params = load_params(args.config)
 
-    # apply overrides
     for kv in args.set:
         if "=" not in kv:
             raise ValueError(f"--set expects key=value, got: {kv}")
         k, v = kv.split("=", 1)
         k = k.strip()
         v = v.strip()
-        # parse bool/int/float/string
         if v.lower() in ["true", "false"]:
             vv = (v.lower() == "true")
         else:
@@ -1925,13 +1816,28 @@ def main_multi():
 
     cfg = build_cfg_from_params(params)
 
-    # visualize is heavy; strongly recommended num_runs=1 when visualize
     if args.visualize and args.num_runs > 1:
         print("[WARN] visualize=True with num_runs>1 is heavy. Consider --num_runs 1.")
 
-    summaries = []
+    out_dir = str(deep_get(params, "RESULTS_DIR", "results"))
+    run_name = str(deep_get(params, "RUN_NAME", "direction_weighted"))
+    auto_inc = bool(deep_get(params, "AUTO_INCREMENT", True))
+    _ensure_dir(out_dir)
+
+    data_csv_path, params_csv_path = build_result_paths(
+        results_dir=out_dir,
+        run_name=_make_run_name(run_name),
+        scenario_id=args.scenario_id,
+        num_runs=args.num_runs,
+        master_seed=args.master_seed,
+        auto_increment=auto_inc
+    )
+
+    all_data = []
+    all_params_rows = []
+
     for run_idx in range(args.num_runs):
-        summary = run_once(
+        df_run, row = run_once(
             visualize=args.visualize,
             params=params,
             cfg=cfg,
@@ -1939,22 +1845,27 @@ def main_multi():
             master_seed=args.master_seed,
             scenario_id=args.scenario_id
         )
-        summaries.append(summary)
+        all_data.append(df_run)
+        all_params_rows.append(row)
 
-    # save multi-run summary
-    out_dir = str(deep_get(params, "RESULTS_DIR", "results"))
-    run_name = str(deep_get(params, "RUN_NAME", "direction_weighted"))
-    _ensure_dir(out_dir)
-    summary_path = os.path.join(out_dir, f"{run_name}__summary_seed{args.master_seed}_{args.scenario_id}.csv")
-    pd.DataFrame(summaries).to_csv(summary_path, index=False)
-    print(f"[SAVE] summary -> {summary_path}")
+    df_data = pd.concat(all_data, axis=0, ignore_index=True)
+    df_params = pd.DataFrame(all_params_rows)
 
-    # print quick stats
-    df = pd.DataFrame(summaries)
-    if "final_J" in df.columns:
-        print("[STATS] final_J mean/std:", float(df["final_J"].mean()), float(df["final_J"].std()))
-    if "final_total_crop_union" in df.columns:
-        print("[STATS] crop_union mean/std:", float(df["final_total_crop_union"].mean()), float(df["final_total_crop_union"].std()))
+    df_data.to_csv(data_csv_path, index=False)
+    df_params.to_csv(params_csv_path, index=False)
+
+    print(f"[SAVE] data   -> {data_csv_path}")
+    print(f"[SAVE] params -> {params_csv_path}")
+
+    # quick stats
+    if "final_J" in df_params.columns:
+        print("[STATS] final_J mean/std:",
+              float(df_params["final_J"].mean()),
+              float(df_params["final_J"].std()))
+    if "final_total_crop_union" in df_params.columns:
+        print("[STATS] crop_union mean/std:",
+              float(df_params["final_total_crop_union"].mean()),
+              float(df_params["final_total_crop_union"].std()))
 
 
 if __name__ == "__main__":
