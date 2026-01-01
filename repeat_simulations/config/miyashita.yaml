@@ -6,7 +6,7 @@ grid_size: 30
 noise_std: 0.5
 num_uavs: 3
 num_ugvs: 2
-steps: 600
+steps: 6
 
 ugv_depth: 8
 reward_type: 6
