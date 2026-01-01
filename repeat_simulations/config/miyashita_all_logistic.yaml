@@ -25,8 +25,8 @@ cfg.waypoint_mode: miyashita
 
 #cfg.nominal_mode: to_waypoint
 #cfg.nominal_mode: to_ugv_future
-cfg.nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
-#cfg.nominal_mode:to_ugv_reachable_best_amb
+#cfg.nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
+cfg.nominal_mode: to_ugv_reachable_best_amb
 
 
 cfg.use_voronoi: true
@@ -56,11 +56,11 @@ cfg.control_period: 0.1
 cfg.cbf_j_alpha: 1.0
 cfg.cbf_j_gamma: 3.0
 
-#cfg.signal_mode: gp_logistic_prob
-cfg.signal_mode: gp_mean
+cfg.signal_mode: gp_logistic_prob
+#cfg.signal_mode: gp_mean
 
-cfg.uav_waypoint_signal: gp_var
-# cfg.uav_waypoint_signal:prob_ambiguity
+#cfg.uav_waypoint_signal: gp_var
+cfg.uav_waypoint_signal: prob_ambiguity
 
 cfg.map_publish_period: 0.5
 
