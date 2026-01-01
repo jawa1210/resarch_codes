@@ -24,6 +24,9 @@ import numpy as np
 from typing import Callable, Tuple, List, Optional, Literal
 from dataclasses import dataclass
 from collections import deque
+from tqdm import tqdm
+import time
+
 
 import argparse
 import json
@@ -1484,7 +1487,9 @@ def run_once(
                 ugv_log[c] = []
 
     # sim loop
-    for step in range(steps):
+    t0 = time.time()
+    pbar = tqdm(range(steps), desc=f"RUN {run_idx}", dynamic_ncols=True, leave=False)
+    for step in pbar:
         if step % 50 == 0:
             print(f"[RUN {run_idx}] === Step {step} ===")
 
@@ -1595,6 +1600,20 @@ def run_once(
         for u in ugvs:
             total_crop += float(np.sum(gt[u.visited]))
         true_sum_history.append(total_crop)
+
+        # --- progress bar postfix (毎ステップ更新すると重いなら mod を大きく) ---
+        if (step % 5) == 0 or step == steps - 1:
+            elapsed = time.time() - t0
+            rate = (step + 1) / max(elapsed, 1e-9)
+            eta = (steps - (step + 1)) / max(rate, 1e-9)
+
+            pbar.set_postfix({
+                "J": f"{J:.2f}",
+                "crop": f"{total_crop:.1f}",
+                "rate": f"{rate:.1f}it/s",
+                "ETA": f"{eta:.1f}s",
+            })
+
 
         if visualize:
             im_mean.set_data(fused_mean)
@@ -1836,7 +1855,7 @@ def main_multi():
     all_data = []
     all_params_rows = []
 
-    for run_idx in range(args.num_runs):
+    for run_idx in tqdm(range(args.num_runs), desc="ALL RUNS", dynamic_ncols=True):
         df_run, row = run_once(
             visualize=args.visualize,
             params=params,
