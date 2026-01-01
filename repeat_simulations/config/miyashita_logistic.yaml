@@ -56,8 +56,8 @@ cfg.control_period: 0.1
 cfg.cbf_j_alpha: 1.0
 cfg.cbf_j_gamma: 3.0
 
-#cfg.signal_mode: gp_logistic_prob
-cfg.signal_mode: gp_mean
+cfg.signal_mode: gp_logistic_prob
+#cfg.signal_mode: gp_mean
 
 cfg.uav_waypoint_signal: gp_var
 # cfg.uav_waypoint_signal:prob_ambiguity
