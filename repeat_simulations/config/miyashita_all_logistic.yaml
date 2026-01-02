@@ -1,5 +1,5 @@
 RESULTS_DIR: results
-RUN_NAME: miyashita_future
+RUN_NAME: miyashita_all_logistic
 AUTO_INCREMENT: true
 
 grid_size: 30
