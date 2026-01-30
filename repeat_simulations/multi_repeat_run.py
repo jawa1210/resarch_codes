@@ -1737,6 +1737,27 @@ def run_once(
             fig.canvas.draw()
             plt.pause(0.01)
 
+        if step == steps - 1:
+                save_dir = str(deep_get(params, "RESULTS_DIR", "results"))
+                os.makedirs(save_dir, exist_ok=True)
+
+                base = f"run{run_idx:03d}_{scenario_id}_seed{master_seed}_step{step:04d}"
+                fig_path = os.path.join(save_dir, base + "_final_maps.png")
+                fig.savefig(fig_path, dpi=200, bbox_inches="tight")
+                print(f"[SAVE] final figure -> {fig_path}")
+                npz_path = os.path.join(save_dir, base + "_final_maps.npz")
+                np.savez_compressed(
+                    npz_path,
+                    fused_mean=fused_mean,
+                    fused_var=fused_var,
+                    fused_prob=fused_prob,
+                    fused_amb=fused_amb,
+                    A_sigma=A_sigma,
+                    gt=gt,
+                )
+                print(f"[SAVE] final arrays -> {npz_path}")
+
+
         if step % 100 == 0:
             print(f"[RUN {run_idx}] step={step} J={J:.3f}, True crop sum={total_crop:.3f}")
 
