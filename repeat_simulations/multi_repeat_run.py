@@ -965,6 +965,103 @@ class UAVController:
         xi_J2 += float(alpha * (np.dot(xi_J1, u) + gamma))
         return xi_J1, float(xi_J2)
 
+<<<<<<< HEAD
+=======
+    def _rbf(self, a: np.ndarray, b: np.ndarray) -> float:
+        # あなたの kernel 定義に合わせる（rbf_sigma は self.rbf_sigma）
+        r2 = float(self.rbf_sigma ** 2)
+        return float(np.exp(-np.linalg.norm(a - b) ** 2 / (2.0 * r2)))
+
+    def calc_cbf_terms(
+        self,
+        alpha_J: float,
+        gamma: float,
+        n_robots: int,
+        ts_sampling: float,
+        t_now: float,
+        I_i0: float,
+        use_voronoi: bool = True,
+        sigma_eps: float | None = None,
+    ) -> tuple[np.ndarray, float, float]:
+        """
+        Returns:
+        xi1 (2,), xi2 (scalar), I_tilde (scalar)
+        """
+        if sigma_eps is None:
+            # 論文の σε（観測ノイズ）に相当：あなたの gp.sigma0 を使うのが自然
+            sigma_eps = float(self.gp.sigma0)
+
+        # ----- Fd ∩ Vi(p) を作る（grid 全点のうち Voronoi 内だけ） -----
+        H = W = self.grid_size
+        if use_voronoi and (self._voronoi_mask is not None) and self.cfg.use_voronoi:
+            cells = np.argwhere(self._voronoi_mask.astype(bool))
+        else:
+            cells = np.argwhere(np.ones((H, W), dtype=bool))
+
+        # BV set Z[l]（あなたの SOGP では self.gp.X）
+        Z = np.asarray(self.gp.X, dtype=float)      # (N,2)
+        N = int(Z.shape[0])
+        p = self.pos.astype(float).copy()           # (2,)
+
+        if N == 0:
+            # BV が無いとき：tilde I はほぼ一定、xi1=0 で OK（まず動く版）
+            I_tilde = float(len(cells)) * 1.0  # k(x*,x*)≈1 の仮置き
+            xi1 = np.zeros(2, dtype=float)
+            xi2 = float(-gamma/(n_robots*ts_sampling) - alpha_J*(I_tilde + gamma*t_now/(n_robots*ts_sampling) - I_i0))
+            return xi1, xi2, I_tilde
+
+        # ----- kernel 行列 Ktilde（Z と p をまとめた (N+1)x(N+1)） -----
+        Ztilde = np.vstack([Z, p.reshape(1, 2)])  # (N+1,2)
+        K = np.zeros((N+1, N+1), dtype=float)
+        for i in range(N+1):
+            for j in range(N+1):
+                K[i, j] = self._rbf(Ztilde[i], Ztilde[j])
+
+        # 論文の Ctilde = -(K + sigma_eps^2 I)^-1  :contentReference[oaicite:3]{index=3}
+        A = K + (sigma_eps**2) * np.eye(N+1)
+        Ctilde = -np.linalg.inv(A)
+
+        # ----- 各 x* について z* = Ctilde k* を作って積算 -----
+        xi1 = np.zeros(2, dtype=float)
+        I_tilde = 0.0
+        L2 = float(self.rbf_sigma ** 2)  # 論文の L^2 に相当（RBF length scale^2）:contentReference[oaicite:4]{index=4}
+
+        # p と Z の差分は何度も使うので先に
+        p_minus_Z = (p.reshape(1, 2) - Z)  # (N,2)
+        k_pZ = np.array([self._rbf(p, Z[j]) for j in range(N)], dtype=float)  # (N,)
+
+        for (i, j) in cells:
+            xstar = np.array([float(i), float(j)], dtype=float)
+
+            # k* = [k(Z1,x*),...,k(ZN,x*),k(p,x*)]
+            k_Zx = np.array([self._rbf(Z[q], xstar) for q in range(N)], dtype=float)  # (N,)
+            k_px = float(self._rbf(p, xstar))
+            kstar = np.concatenate([k_Zx, [k_px]])  # (N+1,)
+
+            z = Ctilde @ kstar  # (N+1,)
+            z_last = float(z[-1])
+
+            # 分散（tilde sigma^2）を足す：sigma^2 = k(x*,x*) + k*^T Ctilde k*  :contentReference[oaicite:5]{index=5}
+            sigma2 = 1.0 + float(kstar.T @ Ctilde @ kstar)
+            I_tilde += sigma2
+
+            # (12) の中身を作る :contentReference[oaicite:6]{index=6}
+            term_x = (k_px / L2) * (p - xstar)  # (2,)
+            # Σ_j z_j * k(p,x_j)/L^2 * (p - x_j)
+            zj = z[:-1]  # (N,)
+            term_Z = ((zj * k_pZ)[:, None] * (p_minus_Z / L2)).sum(axis=0)  # (2,)
+
+            xi1 += 2.0 * z_last * (term_x + term_Z)
+
+        # (13) :contentReference[oaicite:7]{index=7}
+        xi2 = float(
+            -gamma/(n_robots*ts_sampling)
+            - alpha_J*(I_tilde + gamma*t_now/(n_robots*ts_sampling) - I_i0)
+        )
+        return xi1, xi2, float(I_tilde)
+
+
+>>>>>>> 7ee82bb (add)
     def _ring_weight_map(self, H: int, W: int, center_ij: np.ndarray) -> np.ndarray:
         cfg = self.cfg
         I, J = np.indices((H, W))
@@ -1296,8 +1393,11 @@ class UAVController:
                 if fused_var is None or step is None:
                     raise ValueError("fused_var and step are required for J-based CBF")
                 J_now = self.calc_objective_function(fused_var)
-                xi_J1, xi_J2 = self.calc_cbf_terms(
-                    v_nom,
+                xi_J1, xi_J2 ,I_tilde= self.calc_cbf_terms(
+                    alpha_J=cfg.cbf_j_alpha,
+                    gamma=cfg.cbf_j_gamma,
+                    n_robots=len(self.ugv_fleet.ugvs) + 1,
+                    ta_sampling=cfg.,
                     gamma=cfg.cbf_j_gamma,
                     alpha=cfg.cbf_j_alpha,
                     J0=float(self.J0 if self.J0 is not None else J_now),
