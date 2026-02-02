@@ -17,64 +17,63 @@ gp_max_basis: 150
 gp_threshold_delta: 0.05
 rbf_sigma: 2.0
 
-cfg.use_cbf: true
-cfg.waypoint_mode: miyashita
-# cfg.waypoint_mode: suenaga_dp
-#cfg.waypoint_mode: ugv_future_point
-# cfg.waypoint_mode: common_weighted
+cfg:
+  use_cbf: true
+  waypoint_mode: miyashita
+  # waypoint_mode: suenaga_dp
+  # waypoint_mode: ugv_future_point
+  # waypoint_mode: common_weighted
 
-#cfg.nominal_mode: to_waypoint
-#cfg.nominal_mode: to_ugv_future
-cfg.nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
-#cfg.nominal_mode:to_ugv_reachable_best_amb
+  # nominal_mode: to_waypoint
+  # nominal_mode: to_ugv_future
+  nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
+  # nominal_mode: to_ugv_reachable_best_amb
 
+  use_voronoi: true
 
-cfg.use_voronoi: true
+  use_common_map: false
+  common_map_mode: direction
+  # common_map_mode:point
+  ugv_weight_eta: 0.3
 
-cfg.use_common_map: false
-cfg.common_map_mode: direction
-# cfg.common_map_mode:point
-cfg.ugv_weight_eta: 0.3
+  d0: 5.0
+  ugv_future_path_sigma: 5.0
+  step_of_ugv_path_used: 6
 
-cfg.d0: 5.0
-cfg.ugv_future_path_sigma: 5.0
-cfg.step_of_ugv_path_used: 6
+  ring_d_star: 8.0
+  ring_sigma: 4.0
+  use_ring: false
 
-cfg.ring_d_star: 8.0
-cfg.ring_sigma: 4.0
-cfg.use_ring: false
+  suenaga_rho: 0.95
+  suenaga_depth: 5
 
+  k_pp: 2.0
+  k_ugv: 2.0
+  v_limit: 5.0
+  control_period: 0.1
 
-cfg.suenaga_rho: 0.95
-cfg.suenaga_depth: 5
+  cbf_j_alpha: 1.0
+  cbf_j_gamma: 0.3
 
-cfg.k_pp: 2.0
-cfg.k_ugv: 2.0
-cfg.v_limit: 5.0
-cfg.control_period: 0.1
+  signal_mode: gp_logistic_prob
+  # signal_mode: gp_mean
 
-cfg.cbf_j_alpha: 1.0
-cfg.cbf_j_gamma: 0.3
+  uav_waypoint_signal: gp_var
+  # uav_waypoint_signal:prob_ambiguity
 
-cfg.signal_mode: gp_logistic_prob
-#cfg.signal_mode: gp_mean
+  map_publish_period: 1.0
 
-cfg.uav_waypoint_signal: gp_var
-# cfg.uav_waypoint_signal:prob_ambiguity
+  dir_num_steps: 8
+  dir_ell_u: 6.0
+  dir_ell_perp: 3.0
+  dir_eta_forward: 2.0
+  dir_forward_shift: 0.0
+  dir_mode: sum
+  dir_normalize: true
 
-cfg.map_publish_period: 1.0
+  wp_use_topk_centroid: false
+  wp_topk: 60
+  wp_min_dist: 2.0
+  wp_power: 1.0
 
-cfg.dir_num_steps: 8
-cfg.dir_ell_u: 6.0
-cfg.dir_ell_perp: 3.0
-cfg.dir_eta_forward: 2.0
-cfg.dir_forward_shift: 0.0
-cfg.dir_mode: sum
-cfg.dir_normalize: true
-
-cfg.wp_use_topk_centroid: false
-cfg.wp_topk: 60
-cfg.wp_min_dist: 2.0
-cfg.wp_power: 1.0
-
-cfg.ugv_move_period: 100
+  ugv_move_period: 100
