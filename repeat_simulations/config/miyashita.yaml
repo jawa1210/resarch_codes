@@ -53,7 +53,7 @@ cfg:
   control_period: 0.1
 
   cbf_j_alpha: 1.0
-  cbf_j_gamma: 2.0
+  cbf_j_gamma: 0.1
 
   #signal_mode: gp_logistic_prob
   signal_mode: gp_mean
