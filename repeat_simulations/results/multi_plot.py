@@ -270,7 +270,7 @@ if __name__ == "__main__":
         file2=None,                # ← 単独モード
         label1="条件",
         dt=0.1,
-        gamma=1.0,
+        gamma=2.0,
     )
 
     # # ② 2条件比較で使うときの例

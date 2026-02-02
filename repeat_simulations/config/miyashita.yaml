@@ -46,8 +46,8 @@ cfg.ring_sigma: 4.0
 cfg.suenaga_rho: 0.95
 cfg.suenaga_depth: 5
 
-cfg.k_pp: 2.0
-cfg.k_ugv: 2.0
+cfg.k_pp: 1.0
+cfg.k_ugv: 1.0
 cfg.v_limit: 5.0
 cfg.control_period: 0.1
 
@@ -75,4 +75,4 @@ cfg.wp_topk: 60
 cfg.wp_min_dist: 2.0
 cfg.wp_power: 1.0
 
-cfg.ugv_move_period: 5
+cfg.ugv_move_period: 10
