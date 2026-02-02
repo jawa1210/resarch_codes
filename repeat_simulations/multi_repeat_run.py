@@ -924,7 +924,7 @@ class UAVController:
                 grad_k_jp = (k_jp / r2) * (p - x_j)
                 grad_k_sum += float(z_l[j]) * grad_k_jp
 
-            xi_J1 += z_l_ns * (grad_k_lp + grad_k_sum)
+            xi_J1 += 2*z_l_ns * (grad_k_lp - grad_k_sum)
 
             norm_u2 = float(np.dot(u, u))
             delta_lp = (x_l - p) / r2
