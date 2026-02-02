@@ -24,9 +24,6 @@ import numpy as np
 from typing import Callable, Tuple, List, Optional, Literal
 from dataclasses import dataclass
 from collections import deque
-from tqdm import tqdm
-import time
-
 
 import argparse
 import json
@@ -36,6 +33,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import matplotlib.patheffects as pe
 from matplotlib.colors import to_rgba
+
 
 from qpsolvers import solve_qp
 
@@ -62,16 +60,6 @@ def load_params(path: Optional[str]) -> dict:
             return json.load(f)
         else:
             raise ValueError(f"Unsupported config extension: {ext}")
-
-def expand_dotted_keys(params: dict) -> dict:
-    out = {}
-    for k, v in (params or {}).items():
-        if isinstance(k, str) and "." in k:
-            deep_set(out, k, v)
-        else:
-            out[k] = v
-    # 既にネストで来てるdictも再帰的に処理したければ追加で対応可
-    return out
 
 
 def deep_set(d: dict, key: str, value):
@@ -177,8 +165,11 @@ class solver:
         h = np.zeros((m,), dtype=float)
 
         # NOTE:
-        # ここは「本当にCBF制約を入れるなら」G/h を埋める必要があります。
-        # 現状の挙動を壊さないため、あなたの元コード同様 placeholder のままです。
+        for i, ((bJ, gx, gy), slack_coef) in enumerate(zip(self.cbf_list, self.slack_list)):
+            G[i, 0] = -gx
+            G[i, 1] = -gy
+            G[i, 2 + i] = slack_coef   # スラック変数 s_i の係数
+            h[i,0] = bJ
 
         P = np.zeros((dim, dim), dtype=float)
         P[0, 0] = 2.0 * self.P_co
@@ -190,6 +181,8 @@ class solver:
         q[0:2] = -2.0 * self.P_co * nominal_input
 
         sol = solve_qp(P, q, G, h, solver="quadprog")
+        print("G_norm", np.linalg.norm(G), "h_norm", np.linalg.norm(h))
+        print(f"sol={sol}")
         if sol is None:
             print("[QP] infeasible -> nominal")
             return nominal_input.copy()
@@ -456,7 +449,7 @@ class UGVController:
         elif reward_type == 5:
             return (k1 * E + k2 * U) / (d ** 2 + epsilon)
         elif reward_type == 6:
-            return E/(d ** 2 + epsilon)
+            return E
         else:
             return 0.0
 
@@ -781,8 +774,6 @@ class UAVConfig:
     use_common_map: bool = False
     common_map_mode: CommonMapMode = "direction"
     ugv_weight_eta: float = 0.3
-    use_ring: bool = True
-
 
     d0: float = 10.0
     ugv_future_path_sigma: float = 5.0
@@ -1049,11 +1040,8 @@ class UAVController:
                 d = np.hypot(idxs[:, 0] - ci[0], idxs[:, 1] - ci[1])
                 ci = idxs[int(np.argmin(d))]
 
-        if self.cfg.use_ring:
-            w_ring = self._ring_weight_map(H, W, center_ij=ci)
-            score = var_map * w_ring
-        else:
-            score = var_map.copy()
+        w_ring = self._ring_weight_map(H, W, center_ij=ci)
+        score = var_map * w_ring
 
         if allowed_mask is not None:
             score[~allowed_mask] = -np.inf
@@ -1236,28 +1224,14 @@ class UAVController:
             return -cfg.k_ugv * (self.pos - ugv_future)
 
         if cfg.nominal_mode == "to_ugv_future_if_in_voronoi_else_waypoint":
-            ugv_idx = self._find_ugv_future_in_my_voronoi(step_offset=cfg.step_of_ugv_path_used)
+            ugv_idx = self._find_ugv_in_my_voronoi()
             if ugv_idx is None:
-                print(f"[UAV{self.uav_id}] NO-CHASE -> to waypoint")
                 return -cfg.k_pp * (self.pos - waypoint)
-
-            path = self.ugv_fleet.planned_paths[ugv_idx] if ugv_idx < len(self.ugv_fleet.planned_paths) else []
-            if path:
-                idx = min(max(cfg.step_of_ugv_path_used - 1, 0), len(path) - 1)
-                cy, cx = path[idx]
-                ugv_future = np.array([cy, cx], dtype=float)
-            else:
-                ugv_future = self.ugv_fleet.ugvs[ugv_idx].position.astype(float)
-
+            # ここでは fleet の planned_path から future を取るので
+            cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
+            ugv_future = np.array([cy, cx], dtype=float)
             self.current_chase_point = ugv_future.copy()
-
-            # 追加ログ（重要）
-            d = float(np.linalg.norm(self.pos - ugv_future))
-            print(f"[UAV{self.uav_id}] CHASE UGV{ugv_idx} future={ugv_future.tolist()} dist={d:.2f}")
-
             return -cfg.k_ugv * (self.pos - ugv_future)
-
-
 
         return -cfg.k_pp * (self.pos - waypoint)
 
@@ -1275,35 +1249,6 @@ class UAVController:
                     best_d = d
                     best_k = k
         return best_k
-    
-    def _find_ugv_future_in_my_voronoi(self, step_offset: int) -> Optional[int]:
-        if (self._voronoi_mask is None) or (not self.cfg.use_voronoi):
-            return None
-
-        H = W = self.grid_size
-        best_k = None
-        best_d = np.inf
-
-        for k, ugv in enumerate(self.ugv_fleet.ugvs):
-            # --- future point を取る ---
-            path = self.ugv_fleet.planned_paths[k] if k < len(self.ugv_fleet.planned_paths) else []
-            if path:
-                idx = min(max(step_offset - 1, 0), len(path) - 1)
-                cy, cx = path[idx]
-                future = np.array([cy, cx], dtype=float)
-            else:
-                future = ugv.position.astype(float)
-
-            yi, xj = int(future[0]), int(future[1])
-            if 0 <= yi < H and 0 <= xj < W and bool(self._voronoi_mask[yi, xj]):
-                # Voronoi 内に入ってる future の中で一番近いUGVを選ぶ（好みでOK）
-                d = float(np.linalg.norm(self.pos - future))
-                if d < best_d:
-                    best_d = d
-                    best_k = k
-
-        return best_k
-
 
     def set_effective_maps(self, V_eff: Optional[np.ndarray], A_eff: Optional[np.ndarray]):
         self._V_eff_for_uav = None if V_eff is None else V_eff.copy()
@@ -1320,7 +1265,7 @@ class UAVController:
 
         if cfg.uav_waypoint_signal == "prob_ambiguity":
             A_map = P_map * (1.0 - P_map)
-            V_for_wp = V_map*A_map
+            V_for_wp = A_map
         else:
             V_for_wp = V_map
 
@@ -1545,19 +1490,7 @@ def run_once(
                 ugv_log[c] = []
 
     # sim loop
-    t0 = time.time()
-    pbar = tqdm(range(steps), desc=f"RUN {run_idx}", dynamic_ncols=True, leave=False)
-    for step in pbar:
-        if step == 0:
-            print("[DBG cfg]",
-                "use_common_map=", cfg.use_common_map,
-                "common_map_mode=", cfg.common_map_mode,
-                "use_ring=", cfg.use_ring,
-                "wp_use_topk_centroid=", cfg.wp_use_topk_centroid,
-                "nominal_mode=", repr(cfg.nominal_mode),
-                "waypoint_mode=", repr(cfg.waypoint_mode),
-                "ugv_move_period =", cfg.ugv_move_period)
-
+    for step in range(steps):
         if step % 50 == 0:
             print(f"[RUN {run_idx}] === Step {step} ===")
 
@@ -1590,7 +1523,6 @@ def run_once(
         fused_var = np.mean(np.stack(var_maps, axis=0), axis=0)
         fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
         fused_amb = fused_prob * (1.0 - fused_prob)
-        A_sigma = fused_amb * fused_var
 
         # UGV visited logging
         ugv_log["step"].append(step)
@@ -1616,17 +1548,9 @@ def run_once(
             ugv_log[f"ugv{k}_visited_var_sum"].append(float(np.sum(fused_var[m])) if cnt > 0 else 0.0)
             ugv_log[f"ugv{k}_visited_prob_sum"].append(float(np.sum(fused_prob[m])) if cnt > 0 else 0.0)
 
-        ugv_period = max(int(cfg.ugv_move_period), 1)
-        update_ugv = (step % ugv_period) == 0
-
-        if update_ugv:
-            ugv_fleet.compute_voronoi(grid_size, grid_size)
-            ugv_E = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
-            ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth, ambiguity_map=fused_amb)
-            ugv_fleet.step_all(ugv_E, fused_var, depth=ugv_depth, step=step + 1, ambiguity_map=fused_amb)
-        else:
-            # 好み: voronoiだけ更新するならここでOK（planned_pathsは変わらない）
-            ugv_fleet.compute_voronoi(grid_size, grid_size)
+        ugv_fleet.compute_voronoi(grid_size, grid_size)
+        ugv_E = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
+        ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth, ambiguity_map=fused_amb)
 
         V_eff = None
         A_eff = None
@@ -1659,13 +1583,16 @@ def run_once(
             else:
                 uav.ugv_weighted_var_map = None if (V_eff is None) else V_eff.copy()
 
-        env_fn = (lambda p, _gt=gt, _ns=noise_std, _rng=rng:
-          environment_function(p, _gt, rng=_rng, noise_std=_ns))
-
-        A_for_uav = A_eff if cfg.use_common_map else A_sigma  # 目的に応じて fused_amb / A_sigma を選ぶ
-
         for uav in uavs:
-            uav.calc(env_fn, fused_amb=A_for_uav)
+            env_fn = (lambda p, _gt=gt, _ns=noise_std, _rng=rng:
+                      environment_function(p, _gt, rng=_rng, noise_std=_ns))
+            uav.calc(env_fn, fused_amb=fused_amb)
+
+        ugv_period = max(int(cfg.ugv_move_period), 1)
+        if (step % ugv_period) == 0:
+            ugv_fleet.step_all(ugv_E, fused_var, depth=ugv_depth, step=step + 1, ambiguity_map=fused_amb)
+        else:
+            ugv_fleet.compute_voronoi(grid_size, grid_size)
 
         J = float(np.sum(fused_var))
         J_history.append(J)
@@ -1674,28 +1601,6 @@ def run_once(
         for u in ugvs:
             total_crop += float(np.sum(gt[u.visited]))
         true_sum_history.append(total_crop)
-
-        # --- progress bar postfix (毎ステップ更新すると重いなら mod を大きく) ---
-        if (step % 5) == 0 or step == steps - 1:
-            elapsed = time.time() - t0
-            rate = (step + 1) / max(elapsed, 1e-9)
-            eta = (steps - (step + 1)) / max(rate, 1e-9)
-
-            pbar.set_postfix({
-                "J": f"{J:.2f}",
-                "crop": f"{total_crop:.1f}",
-                "rate": f"{rate:.1f}it/s",
-                "ETA": f"{eta:.1f}s",
-            })
-        
-        if step % 1 == 0:
-            sig = tuple(
-                tuple(map(tuple, p[:]))  # 各UGVの先頭3セルだけで十分
-                for p in ugv_fleet.planned_paths
-            )
-            print(f"[DBG] step={step} planned_sig={hash(sig)} sig={sig}")
-
-
 
         if visualize:
             im_mean.set_data(fused_mean)
@@ -1736,27 +1641,6 @@ def run_once(
             ax[1].set_title(f"[RUN {run_idx}] Step {step} Var (fused)")
             fig.canvas.draw()
             plt.pause(0.01)
-
-        if step == steps - 1:
-                save_dir = str(deep_get(params, "RESULTS_DIR", "results"))
-                os.makedirs(save_dir, exist_ok=True)
-
-                base = f"run{run_idx:03d}_{scenario_id}_seed{master_seed}_step{step:04d}"
-                fig_path = os.path.join(save_dir, base + "_final_maps.png")
-                fig.savefig(fig_path, dpi=200, bbox_inches="tight")
-                print(f"[SAVE] final figure -> {fig_path}")
-                npz_path = os.path.join(save_dir, base + "_final_maps.npz")
-                np.savez_compressed(
-                    npz_path,
-                    fused_mean=fused_mean,
-                    fused_var=fused_var,
-                    fused_prob=fused_prob,
-                    fused_amb=fused_amb,
-                    A_sigma=A_sigma,
-                    gt=gt,
-                )
-                print(f"[SAVE] final arrays -> {npz_path}")
-
 
         if step % 100 == 0:
             print(f"[RUN {run_idx}] step={step} J={J:.3f}, True crop sum={total_crop:.3f}")
@@ -1857,7 +1741,7 @@ def build_cfg_from_params(params: dict) -> UAVConfig:
         nominal_mode=str(deep_get(params, "cfg.nominal_mode", "to_waypoint")),
         use_voronoi=bool(deep_get(params, "cfg.use_voronoi", True)),
 
-        use_common_map=bool(deep_get(params, "cfg.use_common_map", False)),
+        use_common_map=bool(deep_get(params, "cfg.use_common_map", True)),
         common_map_mode=str(deep_get(params, "cfg.common_map_mode", "direction")),
         ugv_weight_eta=float(deep_get(params, "cfg.ugv_weight_eta", 0.3)),
 
@@ -1867,7 +1751,6 @@ def build_cfg_from_params(params: dict) -> UAVConfig:
 
         ring_d_star=float(deep_get(params, "cfg.ring_d_star", 8.0)),
         ring_sigma=float(deep_get(params, "cfg.ring_sigma", 4.0)),
-        use_ring=bool(deep_get(params, "cfg.use_ring", False)),
 
         suenaga_rho=float(deep_get(params, "cfg.suenaga_rho", 0.95)),
         suenaga_depth=int(deep_get(params, "cfg.suenaga_depth", 5)),
@@ -1915,8 +1798,6 @@ def main_multi():
     args = parser.parse_args()
 
     params = load_params(args.config)
-    params = expand_dotted_keys(params)
-
 
     for kv in args.set:
         if "=" not in kv:
@@ -1961,7 +1842,7 @@ def main_multi():
     all_data = []
     all_params_rows = []
 
-    for run_idx in tqdm(range(args.num_runs), desc="ALL RUNS", dynamic_ncols=True):
+    for run_idx in range(args.num_runs):
         df_run, row = run_once(
             visualize=args.visualize,
             params=params,
