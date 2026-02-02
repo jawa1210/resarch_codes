@@ -169,7 +169,7 @@ class solver:
             G[i, 0] = -gx
             G[i, 1] = -gy
             G[i, 2 + i] = slack_coef   # スラック変数 s_i の係数
-            h[i,0] = bJ
+            h[i,] = bJ
 
         P = np.zeros((dim, dim), dtype=float)
         P[0, 0] = 2.0 * self.P_co
