@@ -862,6 +862,8 @@ class UAVController:
 
         self._V_eff_for_uav: Optional[np.ndarray] = None
         self._A_eff_for_uav: Optional[np.ndarray] = None
+        self.J0: Optional[float] = None
+
 
     def set_voronoi_mask(self, mask: np.ndarray):
         self._voronoi_mask = mask
@@ -897,245 +899,71 @@ class UAVController:
 
         return mean_map, var_map, prob_map
 
-    # def calc_cbf_terms(self, u: np.ndarray, gamma: float, alpha: float) -> Tuple[np.ndarray, float]:
-    #     r2 = self.rbf_sigma ** 2
-    #     ns = len(self.gp.X)
-    #     xi_J1 = np.zeros(2, dtype=float)
-    #     xi_J2 = 0.0
-    #     p = self.pos.copy()
-
-    #     if ns == 0:
-    #         xi_J2 = alpha * (np.dot(xi_J1, u) + gamma)
-    #         return xi_J1, float(xi_J2)
-
-    #     for l in range(ns):
-    #         x_l = self.gp.X[l]
-    #         k_vec_l = np.array([self.gp.kernel(xj, x_l) for xj in self.gp.X])
-    #         z_l = self.gp.Q @ k_vec_l
-    #         z_l_ns = float(z_l[-1])
-    #         k_lp = float(self.gp.kernel(x_l, p))
-
-    #         grad_k_lp = (k_lp / r2) * (p - x_l)
-
-    #         grad_k_sum = np.zeros(2, dtype=float)
-    #         for j in range(ns - 1):
-    #             x_j = self.gp.X[j]
-    #             k_jp = float(self.gp.kernel(x_j, p))
-    #             grad_k_jp = (k_jp / r2) * (p - x_j)
-    #             grad_k_sum += float(z_l[j]) * grad_k_jp
-
-    #         xi_J1 += 2*z_l_ns * (grad_k_lp - grad_k_sum)
-
-    #         norm_u2 = float(np.dot(u, u))
-    #         delta_lp = (x_l - p) / r2
-    #         inner_lp = float(np.dot(delta_lp, u))
-    #         term1 = (-norm_u2 / r2 + inner_lp ** 2) * (2.0 * z_l_ns * k_lp)
-
-    #         dot_k_l = np.array([
-    #             float(np.dot((self.gp.kernel(self.gp.X[j], p) / r2) * (p - self.gp.X[j]), u))
-    #             for j in range(ns)
-    #         ])
-
-    #         dot_K = np.zeros((ns, ns), dtype=float)
-    #         for k in range(ns - 1):
-    #             grad = (self.gp.kernel(p, self.gp.X[k]) / r2) * (p - self.gp.X[k])
-    #             dot_K[-1, k] = float(np.dot(grad, u))
-    #         for j in range(ns - 1):
-    #             grad = (self.gp.kernel(self.gp.X[j], p) / r2) * (p - self.gp.X[j])
-    #             dot_K[j, -1] = float(np.dot(grad, u))
-
-    #         term2 = float(-4.0 * dot_k_l.T @ self.gp.Q @ dot_K @ z_l)
-    #         term3 = float(2.0 * dot_k_l.T @ self.gp.Q @ dot_k_l)
-    #         term4 = float(2.0 * z_l.T @ dot_K @ self.gp.Q @ dot_K @ z_l)
-
-    #         cross_term = 0.0
-    #         for j in range(ns - 1):
-    #             x_j = self.gp.X[j]
-    #             k_jp = float(self.gp.kernel(x_j, p))
-    #             delta_jp = (x_j - p) / r2
-    #             inner_jp = float(np.dot(delta_jp, u))
-    #             scalar = (-norm_u2 / r2 + inner_jp ** 2)
-    #             cross_term += float(z_l[j]) * k_jp * scalar
-    #         term5 = float(-2.0 * z_l_ns * cross_term)
-
-    #         xi_J2 += float(-(term1 + term2 + term3 + term4 + term5))
-
-    #     xi_J2 += float(alpha * (np.dot(xi_J1, u) + gamma))
-    #     return xi_J1, float(xi_J2)
-
-    def calc_cbf_terms(
-        self,
-        u: np.ndarray,
-        gamma: float,
-        alpha: float,
-        eps_fd: float = 1e-3,
-    ) -> Tuple[np.ndarray, float]:
-        """
-        Suenaga master's dissertation aligned version:
-        - xi_J1 : Eq.(3.16) (summation over testing points x* in UAV's Voronoi region)
-        - xi_J2 : Eq.(3.24) structure using numerical Jacobian of xi_J1 w.r.t position p
-                xi_J2 = (∂xi_J1/∂p)^T u + α ( xi_J1^T u + γ )
-
-        Notes:
-        - We treat "testing points" L as grid cells (i,j) inside self._voronoi_mask.
-        - We compute z*_l via the SOGP "Q" trick: z* = Qns @ k_l  (dissertation Eq.(3.17))
-        - Here Qns is approximated by a block inverse from self.gp.Q (K^{-1}) + pi augmentation.
-            This avoids recomputing full K^{-1} each time, and matches the spirit of Eq.(3.17).
-
-        Returns:
-        xi_J1: shape (2,)
-        xi_J2: float
-        """
-        p = self.pos.astype(float).copy()
-        u = np.asarray(u, dtype=float).reshape(2,)
-
-        ns_minus1 = int(self.gp.X.shape[0])  # number of basis points stored (we'll treat them as x1..x_{ns-1})
-        r2 = float(self.rbf_sigma ** 2)
-
-        # If no basis points, xi_J1 = 0; then xi_J2 = α(0 + γ) = αγ (as in your original fallback)
-        if ns_minus1 == 0:
-            xi_J1 = np.zeros(2, dtype=float)
-            xi_J2 = float(alpha * (float(np.dot(xi_J1, u)) + float(gamma)))
-            return xi_J1, xi_J2
-
-        # ---------- build testing points set L (UAV Voronoi mask only) ----------
-        H = W = int(self.grid_size)
-        if (self._voronoi_mask is None) or (not np.any(self._voronoi_mask)):
-            # fallback: use full grid if Voronoi is missing
-            pts = [(i, j) for i in range(H) for j in range(W)]
-        else:
-            idxs = np.argwhere(self._voronoi_mask.astype(bool))
-            pts = [(int(i), int(j)) for i, j in idxs]
-
-        # ---------- helper: build Q_ns for augmented point p (pi = x_ns) ----------
-        # Dissertation uses K_ns^{-1} with last point being pi. We approximate it by block inverse from Q = K^{-1}.
-        # Here:
-        #   K_{n-1} = K(X,X)  (X = basis points)
-        #   Q_{n-1} = K_{n-1}^{-1}  (stored as self.gp.Q)
-        #   k = k(X, p)
-        #   kpp = k(p,p)
-        #
-        # Block inverse:
-        #   K_ns = [[K_{n-1}, k],
-        #           [k^T,     kpp]]
-        #   inv(K_ns) = [[Q + Q k s^{-1} k^T Q,   -Q k s^{-1}],
-        #                [-s^{-1} k^T Q,           s^{-1}       ]]
-        #   s = kpp - k^T Q k
-        #
-        Q = np.asarray(self.gp.Q, dtype=float)  # (n-1, n-1)
-        Xb = np.asarray(self.gp.X, dtype=float)  # (n-1, 2)
-
-        kXp = np.array([float(self.gp.kernel(xj, p)) for xj in Xb], dtype=float)  # (n-1,)
-        kpp = float(self.gp.kernel(p, p))
-        s = float(kpp - kXp.T @ Q @ kXp)
-        if abs(s) < 1e-12:
-            s = 1e-12 if s >= 0 else -1e-12
-
-        # precompute blocks
-        Qk = Q @ kXp                      # (n-1,)
-        s_inv = 1.0 / s                   # scalar
-        Q11 = Q + np.outer(Qk, Qk) * s_inv   # (n-1, n-1)
-        Q12 = -Qk * s_inv                    # (n-1,)
-        Q21 = Q12.reshape(1, -1)             # (1, n-1)
-        Q22 = np.array([[s_inv]], dtype=float)  # (1,1)
-
-        # helper: z_star = inv(K_ns) @ k_l  (k_l includes last entry k(p, x_star))
-        def _z_star_for_xstar(x_star: np.ndarray) -> np.ndarray:
-            kX = np.array([float(self.gp.kernel(xj, x_star)) for xj in Xb], dtype=float)  # (n-1,)
-            kpx = float(self.gp.kernel(p, x_star))                                        # scalar
-            # z_top = Q11 kX + Q12 kpx
-            z_top = Q11 @ kX + Q12 * kpx
-            # z_last = Q21 kX + Q22 kpx
-            z_last = float(Q21 @ kX + Q22 * kpx)
-            return np.concatenate([z_top, np.array([z_last], dtype=float)], axis=0)
-
-        # ---------- core: compute xi_J1 via Eq.(3.16) ----------
-        # xi_J1 = 2 Σ_{l∈L} z_ns [ grad_k(p, x*) - Σ_{j=1}^{ns-1} z_j grad_k(p, x_j) ]
+    def calc_cbf_terms(self, u: np.ndarray, gamma: float, alpha: float) -> Tuple[np.ndarray, float]:
+        r2 = self.rbf_sigma ** 2
+        ns = len(self.gp.X)
         xi_J1 = np.zeros(2, dtype=float)
+        xi_J2 = 0.0
+        p = self.pos.copy()
 
-        # Precompute grad_k(p, x_j) for basis points
-        grad_p_xj = []
-        k_p_xj = []
-        for xj in Xb:
-            kpj = float(self.gp.kernel(p, xj))
-            k_p_xj.append(kpj)
-            grad_p_xj.append((kpj / r2) * (p - xj))   # ∂k(p,xj)/∂p with your sign convention
-        grad_p_xj = np.asarray(grad_p_xj, dtype=float)  # (n-1,2)
+        if ns == 0:
+            xi_J2 = alpha * (np.dot(xi_J1, u) + gamma)
+            return xi_J1, float(xi_J2)
 
-        for (i, j) in pts:
-            x_star = np.array([float(i), float(j)], dtype=float)
+        for l in range(ns):
+            x_l = self.gp.X[l]
+            k_vec_l = np.array([self.gp.kernel(xj, x_l) for xj in self.gp.X])
+            z_l = self.gp.Q @ k_vec_l
+            z_l_ns = float(z_l[-1])
+            k_lp = float(self.gp.kernel(x_l, p))
 
-            z = _z_star_for_xstar(x_star)   # (ns,)
-            z_last = float(z[-1])
+            grad_k_lp = (k_lp / r2) * (p - x_l)
 
-            kpx = float(self.gp.kernel(p, x_star))
-            grad_p_xstar = (kpx / r2) * (p - x_star)
+            grad_k_sum = np.zeros(2, dtype=float)
+            for j in range(ns - 1):
+                x_j = self.gp.X[j]
+                k_jp = float(self.gp.kernel(x_j, p))
+                grad_k_jp = (k_jp / r2) * (p - x_j)
+                grad_k_sum += float(z_l[j]) * grad_k_jp
 
-            # Σ z_j * grad_k(p, x_j)
-            grad_sum = (z[:-1].reshape(-1, 1) * grad_p_xj).sum(axis=0)
+            xi_J1 += z_l_ns * (grad_k_lp + grad_k_sum)
 
-            # Note: dissertation Eq.(3.16) has ( ... - Σ ... ) term. We keep same structure.
-            xi_J1 += 2.0 * z_last * (grad_p_xstar - grad_sum)
+            norm_u2 = float(np.dot(u, u))
+            delta_lp = (x_l - p) / r2
+            inner_lp = float(np.dot(delta_lp, u))
+            term1 = (-norm_u2 / r2 + inner_lp ** 2) * (2.0 * z_l_ns * k_lp)
 
-        # ---------- xi_J2 via Eq.(3.24) structure (numerical Jacobian) ----------
-        # xi_J2 = (∂xi_J1/∂p)^T u + α( xi_J1^T u + γ )
-        # We compute J = ∂xi_J1/∂p as 2x2 matrix by finite differences around current p.
-        def _xi1_at(p_test: np.ndarray) -> np.ndarray:
-            # locally evaluate xi_J1 at p_test (copy of above but using p_test)
-            p0 = p_test
-            kXp0 = np.array([float(self.gp.kernel(xj, p0)) for xj in Xb], dtype=float)
-            kpp0 = float(self.gp.kernel(p0, p0))
-            s0 = float(kpp0 - kXp0.T @ Q @ kXp0)
-            if abs(s0) < 1e-12:
-                s0 = 1e-12 if s0 >= 0 else -1e-12
-            Qk0 = Q @ kXp0
-            s0_inv = 1.0 / s0
-            Q11_0 = Q + np.outer(Qk0, Qk0) * s0_inv
-            Q12_0 = -Qk0 * s0_inv
-            Q21_0 = Q12_0.reshape(1, -1)
-            Q22_0 = float(s0_inv)
+            dot_k_l = np.array([
+                float(np.dot((self.gp.kernel(self.gp.X[j], p) / r2) * (p - self.gp.X[j]), u))
+                for j in range(ns)
+            ])
 
-            # precompute grad wrt p0 for basis points
-            grad_p0_xj = []
-            for xj in Xb:
-                kpj0 = float(self.gp.kernel(p0, xj))
-                grad_p0_xj.append((kpj0 / r2) * (p0 - xj))
-            grad_p0_xj = np.asarray(grad_p0_xj, dtype=float)
+            dot_K = np.zeros((ns, ns), dtype=float)
+            for k in range(ns - 1):
+                grad = (self.gp.kernel(p, self.gp.X[k]) / r2) * (p - self.gp.X[k])
+                dot_K[-1, k] = float(np.dot(grad, u))
+            for j in range(ns - 1):
+                grad = (self.gp.kernel(self.gp.X[j], p) / r2) * (p - self.gp.X[j])
+                dot_K[j, -1] = float(np.dot(grad, u))
 
-            def z_for_xstar0(x_star0: np.ndarray) -> np.ndarray:
-                kX = np.array([float(self.gp.kernel(xj, x_star0)) for xj in Xb], dtype=float)
-                kpx0 = float(self.gp.kernel(p0, x_star0))
-                z_top = Q11_0 @ kX + Q12_0 * kpx0
-                z_last = float(Q21_0 @ kX + Q22_0 * kpx0)
-                return np.concatenate([z_top, np.array([z_last], dtype=float)], axis=0)
+            term2 = float(-4.0 * dot_k_l.T @ self.gp.Q @ dot_K @ z_l)
+            term3 = float(2.0 * dot_k_l.T @ self.gp.Q @ dot_k_l)
+            term4 = float(2.0 * z_l.T @ dot_K @ self.gp.Q @ dot_K @ z_l)
 
-            xi1 = np.zeros(2, dtype=float)
-            for (ii, jj) in pts:
-                x_star0 = np.array([float(ii), float(jj)], dtype=float)
-                z0 = z_for_xstar0(x_star0)
-                z_last0 = float(z0[-1])
+            cross_term = 0.0
+            for j in range(ns - 1):
+                x_j = self.gp.X[j]
+                k_jp = float(self.gp.kernel(x_j, p))
+                delta_jp = (x_j - p) / r2
+                inner_jp = float(np.dot(delta_jp, u))
+                scalar = (-norm_u2 / r2 + inner_jp ** 2)
+                cross_term += float(z_l[j]) * k_jp * scalar
+            term5 = float(-2.0 * z_l_ns * cross_term)
 
-                kpx0 = float(self.gp.kernel(p0, x_star0))
-                grad_p0_xstar = (kpx0 / r2) * (p0 - x_star0)
-                grad_sum0 = (z0[:-1].reshape(-1, 1) * grad_p0_xj).sum(axis=0)
-                xi1 += 2.0 * z_last0 * (grad_p0_xstar - grad_sum0)
-            return xi1
+            xi_J2 += float(-(term1 + term2 + term3 + term4 + term5))
 
-        # finite difference Jacobian (2x2): columns are ∂xi1/∂p_x and ∂xi1/∂p_y
-        # finite difference Jacobian (2x2)
-        Jmat = np.zeros((2, 2), dtype=float)
-        for d in range(2):
-            dp = np.zeros(2, dtype=float)
-            dp[d] = eps_fd
-            xi_p = _xi1_at(p + dp)
-            xi_m = _xi1_at(p - dp)
-            Jmat[:, d] = (xi_p - xi_m) / (2.0 * eps_fd)
-
-        # scalar xi_J2 (quadratic form + alpha term)
-        xi_J2 = float(u.T @ Jmat @ u) + float(alpha) * (float(xi_J1.T @ u) + float(gamma))
+        xi_J2 += float(alpha * (np.dot(xi_J1, u) + gamma))
         return xi_J1, float(xi_J2)
-
-
 
     def _ring_weight_map(self, H: int, W: int, center_ij: np.ndarray) -> np.ndarray:
         cfg = self.cfg
@@ -1428,10 +1256,17 @@ class UAVController:
         self._V_eff_for_uav = None if V_eff is None else V_eff.copy()
         self._A_eff_for_uav = None if A_eff is None else A_eff.copy()
 
-    def calc(self, env_fn: Callable[[np.ndarray], List[Tuple[np.ndarray, float]]],
-             fused_amb: Optional[np.ndarray] = None):
+    def calc(
+        self,
+        env_fn: Callable[[np.ndarray], List[Tuple[np.ndarray, float]]],
+        fused_amb: Optional[np.ndarray] = None,
+        fused_var: Optional[np.ndarray] = None,
+        step: Optional[int] = None,
+        use_icbf: bool = False,
+    ):
 
         cfg = self.cfg
+        use_icbf=False
 
         self.update_map(env_fn)
         self.update_maps_for_ugv()
@@ -1447,12 +1282,27 @@ class UAVController:
         self.current_waypoint = waypoint
 
         v_nom = self._compute_nominal(waypoint, fused_amb=fused_amb)
-        nu_nom = (v_nom - self.v) / cfg.control_period
+        if not use_icbf:
+            nu_nom = (v_nom - self.v) / cfg.control_period
+        else:
+            nu_nom = np.zeros(2, dtype=float)
 
         if not cfg.use_cbf:
             self.v = v_nom
         else:
-            xi_J1, xi_J2 = self.calc_cbf_terms(self.v, gamma=cfg.cbf_j_gamma, alpha=cfg.cbf_j_alpha)
+            if not use_icbf:
+                xi_J1, xi_J2 = self.calc_icbf_terms(self.v, gamma=cfg.cbf_j_gamma, alpha=cfg.cbf_j_alpha)
+            else:
+                if fused_var is None or step is None:
+                    raise ValueError("fused_var and step are required for J-based CBF")
+                J_now = self.calc_objective_function(fused_var)
+                xi_J1, xi_J2 = self.calc_cbf_terms(
+                    v_nom,
+                    gamma=cfg.cbf_j_gamma,
+                    alpha=cfg.cbf_j_alpha,
+                    J0=float(self.J0 if self.J0 is not None else J_now),
+                    t=float(step),
+                )
             cbf_J = [float(-xi_J2), float(-xi_J1[0]), float(-xi_J1[1]), 0.0001]
 
             qp = solver()
@@ -1760,7 +1610,7 @@ def run_once(
         for uav in uavs:
             env_fn = (lambda p, _gt=gt, _ns=noise_std, _rng=rng:
                       environment_function(p, _gt, rng=_rng, noise_std=_ns))
-            uav.calc(env_fn, fused_amb=fused_amb)
+            uav.calc(env_fn, fused_amb=fused_amb, fused_var=fused_var, step=step)
 
         ugv_period = max(int(cfg.ugv_move_period), 1)
         if (step % ugv_period) == 0:
