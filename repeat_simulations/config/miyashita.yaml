@@ -1,5 +1,5 @@
 RESULTS_DIR: results
-RUN_NAME: miyashita_future_mu_only
+RUN_NAME: miyashita_future_ucb
 AUTO_INCREMENT: true
 
 grid_size: 30
@@ -9,7 +9,7 @@ num_ugvs: 2
 steps: 50
 
 ugv_depth: 8
-reward_type: 6
+reward_type: 3
 discount_factor: 0.95
 
 gp_sensing_noise_sigma0: 0.1

@@ -68,6 +68,7 @@ def plot_two_results_files(
     label1: str | None = None,
     label2: str | None = None,
     dt: float = 0.1,
+    ds: float = 0.5,
     gamma: float = 3.0,
 ):
     """
@@ -119,6 +120,7 @@ def plot_two_results_files(
     
     mean=mean1["step"].to_numpy()
     t1_mean = mean1["step"].to_numpy() * dt   # 秒
+    ts_mean = mean1["step"].to_numpy() * ds   # 秒
     J1_mean = mean1["J"].to_numpy()
     C1_mean = mean1["true_crop_sum"].to_numpy()
 
@@ -192,7 +194,7 @@ def plot_two_results_files(
             print(f"[WARN] {file1}: num_uavs が取得できなかったので N=1 とみなして理論線を描画します。")
 
         # 理論線: J_ideal(t) = J0 - N * gamma * t
-        J_ideal = J0 - N * (gamma/dt) * t_common
+        J_ideal = J0 - N * (gamma/ds) * t_common
 
         ax.plot(
             t_common, J_ideal,
@@ -264,17 +266,18 @@ def plot_two_results_files(
 
 if __name__ == "__main__":
     # ① 単独ファイルで使うとき
-    file_single = "miyashita_future_poster_seed1234_data_1runs.csv"
+    file_single = "miyashita_future_ucb_poster_seed1234_data_1runs_001.csv"
     plot_two_results_files(
         file_single,
         file2=None,                # ← 単独モード
         label1="条件",
         dt=0.1,
-        gamma=1.0,
+        ds=0.5,
+        gamma=6.0,          # 9 UAV の場合
     )
 
     # # ② 2条件比較で使うときの例
-    # file_A = "multi_uav_multi_ugv_suenaga_results_10runs.csv"
+    # file_A = "multi_uav_multi_ugv_use_path_suenaga_results_10runs.csv"
     # file_B = "multi_uav_multi_ugv_results_10runs.csv"
 
     # plot_two_results_files(
