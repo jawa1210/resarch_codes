@@ -16,6 +16,13 @@ mpl.rcParams['legend.fontsize']    = 14
 mpl.rcParams['xtick.labelsize']    = 16
 mpl.rcParams['ytick.labelsize']    = 16
 
+# 追加: 「各試行」用の見た目パラメータ（好きに調整OK）
+RUN_ALPHA = 0.08     # 0.05〜0.15 くらいがおすすめ（小さいほど“帯”が消える）
+RUN_LW    = 1.0      # 各試行の線幅
+RUN_Z     = 1        # 背面に回す
+MEAN_LW   = 3.0      # 平均線
+MEAN_Z    = 5        # 前面に出す
+
 
 def _nice_label_from_path(path: str) -> str:
     base = os.path.basename(path)
@@ -117,10 +124,9 @@ def plot_two_results_files(
     if mean1.empty:
         print("file1 の平均用データが空です。CSV を確認してください。")
         return
-    
-    mean=mean1["step"].to_numpy()
+
     t1_mean = mean1["step"].to_numpy() * dt   # 秒
-    ts_mean = mean1["step"].to_numpy() * ds   # 秒
+    ts_mean = mean1["step"].to_numpy() * ds   # 秒（※今は理論線の式に使ってる）
     J1_mean = mean1["J"].to_numpy()
     C1_mean = mean1["true_crop_sum"].to_numpy()
 
@@ -142,7 +148,7 @@ def plot_two_results_files(
     # =====================================================
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # file1: 各 run
+    # file1: 各 run（薄線）
     for i, r in enumerate(runs1):
         sub = df1[df1["run"] == r].sort_values("step")
         if sub.empty:
@@ -150,18 +156,29 @@ def plot_two_results_files(
         t = sub["step"].to_numpy() * dt
         J = sub["J"].to_numpy()
         lab = f"{label1} 各試行" if i == 0 else None
-        ax.plot(t, J, color=color1, alpha=0.3, label=lab)
+        ax.plot(
+            t, J,
+            color=color1,
+            alpha=RUN_ALPHA,
+            linewidth=RUN_LW,
+            zorder=RUN_Z,
+            label=lab
+        )
 
-    # file1: 平均
+    # file1: 平均（太線）
     ax.plot(
         t1_mean, J1_mean,
-        color=color1, linewidth=3.0,
+        color=color1,
+        linewidth=MEAN_LW,
+        zorder=MEAN_Z,
         label=f"{label1} 平均",
     )
 
     # file2 がある場合だけ 2条件目を描く
     if has_second:
         runs2 = sorted(df2["run"].unique())
+
+        # file2: 各 run（薄線）
         for i, r in enumerate(runs2):
             sub = df2[df2["run"] == r].sort_values("step")
             if sub.empty:
@@ -169,11 +186,21 @@ def plot_two_results_files(
             t = sub["step"].to_numpy() * dt
             J = sub["J"].to_numpy()
             lab = f"{label2} 各試行" if i == 0 else None
-            ax.plot(t, J, color=color2, alpha=0.3, label=lab)
+            ax.plot(
+                t, J,
+                color=color2,
+                alpha=RUN_ALPHA,
+                linewidth=RUN_LW,
+                zorder=RUN_Z,
+                label=lab
+            )
 
+        # file2: 平均（太線）
         ax.plot(
             t2_mean, J2_mean,
-            color=color2, linewidth=3.0,
+            color=color2,
+            linewidth=MEAN_LW,
+            zorder=MEAN_Z,
             label=f"{label2} 平均",
         )
 
@@ -194,11 +221,14 @@ def plot_two_results_files(
             print(f"[WARN] {file1}: num_uavs が取得できなかったので N=1 とみなして理論線を描画します。")
 
         # 理論線: J_ideal(t) = J0 - N * gamma * t
-        J_ideal = J0 - N * (gamma/ds) * t_common
+        # ※あなたの元コードに合わせて gamma/ds を使う形のまま維持
+        J_ideal = J0 - N * (gamma / ds) * t_common
 
         ax.plot(
             t_common, J_ideal,
-            "k--", linewidth=2.5,
+            "k--",
+            linewidth=2.5,
+            zorder=MEAN_Z + 1,
             label=rf"理論直線 $J_0 - N_{{\rm UAV}}\gamma t$ (N={N}, $\gamma={gamma:.2f}$)"
         )
 
@@ -218,7 +248,7 @@ def plot_two_results_files(
     # =====================================================
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # file1: 各 run
+    # file1: 各 run（薄線）
     for i, r in enumerate(runs1):
         sub = df1[df1["run"] == r].sort_values("step")
         if sub.empty:
@@ -226,17 +256,27 @@ def plot_two_results_files(
         t = sub["step"].to_numpy() * dt
         C = sub["true_crop_sum"].to_numpy()
         lab = f"{label1} 各試行" if i == 0 else None
-        ax.plot(t, C, color=color1, alpha=0.3, label=lab)
+        ax.plot(
+            t, C,
+            color=color1,
+            alpha=RUN_ALPHA,
+            linewidth=RUN_LW,
+            zorder=RUN_Z,
+            label=lab
+        )
 
-    # file1: 平均
+    # file1: 平均（太線）
     ax.plot(
         t1_mean, C1_mean,
-        color=color1, linewidth=3.0,
+        color=color1,
+        linewidth=MEAN_LW,
+        zorder=MEAN_Z,
         label=f"{label1} 平均",
     )
 
     # file2 がある場合だけ 2条件目
     if has_second:
+        # file2: 各 run（薄線）
         for i, r in enumerate(runs2):
             sub = df2[df2["run"] == r].sort_values("step")
             if sub.empty:
@@ -244,11 +284,21 @@ def plot_two_results_files(
             t = sub["step"].to_numpy() * dt
             C = sub["true_crop_sum"].to_numpy()
             lab = f"{label2} 各試行" if i == 0 else None
-            ax.plot(t, C, color=color2, alpha=0.3, label=lab)
+            ax.plot(
+                t, C,
+                color=color2,
+                alpha=RUN_ALPHA,
+                linewidth=RUN_LW,
+                zorder=RUN_Z,
+                label=lab
+            )
 
+        # file2: 平均（太線）
         ax.plot(
             t2_mean, C2_mean,
-            color=color2, linewidth=3.0,
+            color=color2,
+            linewidth=MEAN_LW,
+            zorder=MEAN_Z,
             label=f"{label2} 平均",
         )
 
