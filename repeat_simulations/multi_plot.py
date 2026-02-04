@@ -23,10 +23,15 @@ def _nice_label_from_path(path: str) -> str:
 
 
 def _ensure_run_column(df: pd.DataFrame) -> pd.DataFrame:
-    if "run" not in df.columns:
-        df = df.copy()
-        df["run"] = 0
+    df = df.copy()
+    if "run" in df.columns:
+        return df
+    if "run_idx" in df.columns:
+        df["run"] = df["run_idx"]
+        return df
+    df["run"] = 0
     return df
+
 
 
 def _infer_param_file(results_path: str) -> str | None:
