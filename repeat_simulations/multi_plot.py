@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-import japanize_matplotlib
+import japanize_matplotlib  # noqa: F401
 import os
 
 # ── フォント設定 ────────────────────────────────
@@ -16,12 +16,19 @@ mpl.rcParams['legend.fontsize']    = 14
 mpl.rcParams['xtick.labelsize']    = 16
 mpl.rcParams['ytick.labelsize']    = 16
 
-# 追加: 「各試行」用の見た目パラメータ（好きに調整OK）
-RUN_ALPHA = 0.08     # 0.05〜0.15 くらいがおすすめ（小さいほど“帯”が消える）
-RUN_LW    = 1.0      # 各試行の線幅
-RUN_Z     = 1        # 背面に回す
-MEAN_LW   = 3.0      # 平均線
-MEAN_Z    = 5        # 前面に出す
+# ============================================================
+# 見た目（ここだけ触ればOK）
+# ============================================================
+RUN_ALPHA = 0.35     # 各試行の透明度（低すぎると「帯」に見えやすい）
+RUN_LW    = 0.9      # 各試行の線幅（細め）
+RUN_Z     = 1        # 背面
+
+MEAN_ALPHA = 1.0     # 平均線は濃く
+MEAN_LW    = 3.2     # 平均線は太く
+MEAN_Z     = 5        # 前面
+
+THEORY_LW  = 2.5
+THEORY_Z   = 4
 
 
 def _nice_label_from_path(path: str) -> str:
@@ -71,12 +78,12 @@ def _load_num_uavs_from_param(param_path: str) -> int | None:
 
 def plot_two_results_files(
     file1: str,
-    file2: str | None = None,     # ← ここを None 許可に
+    file2: str | None = None,
     label1: str | None = None,
     label2: str | None = None,
     dt: float = 0.1,
     ds: float = 0.5,
-    gamma: float = 3.0,
+    gamma: float | None = 3.0,
 ):
     """
     file2 を None にすると単独ファイルのプロットになる。
@@ -85,23 +92,17 @@ def plot_two_results_files(
     gamma: 1 UAV あたりの「1秒あたりの減少量 γ」
     → 理論線: J_ideal(t) = J0 - N_uav * gamma * t
     """
+
     # ── CSV 読み込み ───────────────────────────
     df1 = pd.read_csv(file1)
-    print("=== file1 head ===")
-    print(df1.head())
-
     df1 = _ensure_run_column(df1)
     df1 = df1.dropna(subset=["step", "J", "true_crop_sum"])
 
     if label1 is None:
         label1 = _nice_label_from_path(file1)
 
-    # file2 があるかどうかで分岐
     if file2 is not None:
         df2 = pd.read_csv(file2)
-        print("=== file2 head ===")
-        print(df2.head())
-
         df2 = _ensure_run_column(df2)
         df2 = df2.dropna(subset=["step", "J", "true_crop_sum"])
 
@@ -125,8 +126,7 @@ def plot_two_results_files(
         print("file1 の平均用データが空です。CSV を確認してください。")
         return
 
-    t1_mean = mean1["step"].to_numpy() * dt   # 秒
-    ts_mean = mean1["step"].to_numpy() * ds   # 秒（※今は理論線の式に使ってる）
+    t1_mean = mean1["step"].to_numpy() * dt
     J1_mean = mean1["J"].to_numpy()
     C1_mean = mean1["true_crop_sum"].to_numpy()
 
@@ -140,163 +140,146 @@ def plot_two_results_files(
             J2_mean = mean2["J"].to_numpy()
             C2_mean = mean2["true_crop_sum"].to_numpy()
 
+    # 色
     color1 = "tab:blue"
     color2 = "tab:red"
 
     # =====================================================
-    # 1. Objective J(t)
+    # 1) Objective J(t)
     # =====================================================
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # file1: 各 run（薄線）
+    # file1: 各 run（10本なら10本全部）
     for i, r in enumerate(runs1):
         sub = df1[df1["run"] == r].sort_values("step")
         if sub.empty:
             continue
         t = sub["step"].to_numpy() * dt
         J = sub["J"].to_numpy()
-        lab = f"{label1} 各試行" if i == 0 else None
         ax.plot(
             t, J,
             color=color1,
             alpha=RUN_ALPHA,
             linewidth=RUN_LW,
             zorder=RUN_Z,
-            label=lab
+            label=(f"{label1} 各試行" if i == 0 else None),
         )
 
-    # file1: 平均（太線）
+    # file1: 平均（濃く太く）
     ax.plot(
         t1_mean, J1_mean,
         color=color1,
+        alpha=MEAN_ALPHA,
         linewidth=MEAN_LW,
         zorder=MEAN_Z,
         label=f"{label1} 平均",
     )
 
-    # file2 がある場合だけ 2条件目を描く
+    # file2
     if has_second:
-        runs2 = sorted(df2["run"].unique())
-
-        # file2: 各 run（薄線）
         for i, r in enumerate(runs2):
             sub = df2[df2["run"] == r].sort_values("step")
             if sub.empty:
                 continue
             t = sub["step"].to_numpy() * dt
             J = sub["J"].to_numpy()
-            lab = f"{label2} 各試行" if i == 0 else None
             ax.plot(
                 t, J,
                 color=color2,
                 alpha=RUN_ALPHA,
                 linewidth=RUN_LW,
                 zorder=RUN_Z,
-                label=lab
+                label=(f"{label2} 各試行" if i == 0 else None),
             )
 
-        # file2: 平均（太線）
         ax.plot(
             t2_mean, J2_mean,
             color=color2,
+            alpha=MEAN_ALPHA,
             linewidth=MEAN_LW,
             zorder=MEAN_Z,
             label=f"{label2} 平均",
         )
 
-    # ── 理論直線（file1 のパラメータから N_uav を取る） ──────────────
+    # ── 理論直線（file1 の params から N を推定） ──────────────
     if gamma is not None:
         t_common = t1_mean
-        J0 = J1_mean[0]
+        J0 = float(J1_mean[0])
 
-        # file1 に対応する params から UAV 台数を読む
         param_path = _infer_param_file(file1)
-        if param_path is not None:
-            N = _load_num_uavs_from_param(param_path)
-        else:
-            N = None
-
+        N = _load_num_uavs_from_param(param_path) if (param_path is not None) else None
         if N is None:
             N = 1
             print(f"[WARN] {file1}: num_uavs が取得できなかったので N=1 とみなして理論線を描画します。")
 
-        # 理論線: J_ideal(t) = J0 - N * gamma * t
-        # ※あなたの元コードに合わせて gamma/ds を使う形のまま維持
+        # 注意：あなたの元コードの仕様を維持（gamma/ds を掛ける）
         J_ideal = J0 - N * (gamma / ds) * t_common
 
         ax.plot(
             t_common, J_ideal,
             "k--",
-            linewidth=2.5,
-            zorder=MEAN_Z + 1,
+            linewidth=THEORY_LW,
+            zorder=THEORY_Z,
             label=rf"理論直線 $J_0 - N_{{\rm UAV}}\gamma t$ (N={N}, $\gamma={gamma:.2f}$)"
         )
 
     ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
     ax.set_ylabel("目的関数 $J$")
-    if has_second:
-        ax.set_title("Objective $J$ の推移（2条件比較）")
-    else:
-        ax.set_title(f"Objective $J$ の推移（{label1}）")
+    ax.set_title("Objective $J$ の推移（2条件比較）" if has_second else f"Objective $J$ の推移（{label1}）")
     ax.grid(True)
     ax.legend()
     plt.tight_layout()
     plt.show()
 
     # =====================================================
-    # 2. true_crop_sum(t)
+    # 2) true_crop_sum(t)
     # =====================================================
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # file1: 各 run（薄線）
     for i, r in enumerate(runs1):
         sub = df1[df1["run"] == r].sort_values("step")
         if sub.empty:
             continue
         t = sub["step"].to_numpy() * dt
         C = sub["true_crop_sum"].to_numpy()
-        lab = f"{label1} 各試行" if i == 0 else None
         ax.plot(
             t, C,
             color=color1,
             alpha=RUN_ALPHA,
             linewidth=RUN_LW,
             zorder=RUN_Z,
-            label=lab
+            label=(f"{label1} 各試行" if i == 0 else None),
         )
 
-    # file1: 平均（太線）
     ax.plot(
         t1_mean, C1_mean,
         color=color1,
+        alpha=MEAN_ALPHA,
         linewidth=MEAN_LW,
         zorder=MEAN_Z,
         label=f"{label1} 平均",
     )
 
-    # file2 がある場合だけ 2条件目
     if has_second:
-        # file2: 各 run（薄線）
         for i, r in enumerate(runs2):
             sub = df2[df2["run"] == r].sort_values("step")
             if sub.empty:
                 continue
             t = sub["step"].to_numpy() * dt
             C = sub["true_crop_sum"].to_numpy()
-            lab = f"{label2} 各試行" if i == 0 else None
             ax.plot(
                 t, C,
                 color=color2,
                 alpha=RUN_ALPHA,
                 linewidth=RUN_LW,
                 zorder=RUN_Z,
-                label=lab
+                label=(f"{label2} 各試行" if i == 0 else None),
             )
 
-        # file2: 平均（太線）
         ax.plot(
             t2_mean, C2_mean,
             color=color2,
+            alpha=MEAN_ALPHA,
             linewidth=MEAN_LW,
             zorder=MEAN_Z,
             label=f"{label2} 平均",
@@ -304,10 +287,7 @@ def plot_two_results_files(
 
     ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
     ax.set_ylabel("累積真値の合計")
-    if has_second:
-        ax.set_title("UGV 訪問セルの累積真値（2条件比較）")
-    else:
-        ax.set_title(f"UGV 訪問セルの累積真値（{label1}）")
+    ax.set_title("UGV 訪問セルの累積真値（2条件比較）" if has_second else f"UGV 訪問セルの累積真値（{label1}）")
     ax.grid(True)
     ax.legend()
     plt.tight_layout()
@@ -315,26 +295,25 @@ def plot_two_results_files(
 
 
 if __name__ == "__main__":
-    # ① 単独ファイルで使うとき
+    # ① 単独ファイル
     file_single = "miyashita_future_ucb_poster_seed1234_data_1runs_001.csv"
     plot_two_results_files(
         file_single,
-        file2=None,                # ← 単独モード
+        file2=None,
         label1="条件",
         dt=0.1,
         ds=0.5,
-        gamma=6.0,          # 9 UAV の場合
+        gamma=6.0,
     )
 
-    # # ② 2条件比較で使うときの例
+    # ② 2条件比較の例
     # file_A = "multi_uav_multi_ugv_use_path_suenaga_results_10runs.csv"
     # file_B = "multi_uav_multi_ugv_results_10runs.csv"
-
     # plot_two_results_files(
-    #     file_A,
-    #     file_B,
+    #     file_A, file_B,
     #     label1="条件A",
     #     label2="条件B",
     #     dt=0.1,
-    #     gamma=3.0
+    #     ds=0.5,
+    #     gamma=3.0,
     # )
