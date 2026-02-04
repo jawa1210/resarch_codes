@@ -16,20 +16,6 @@ mpl.rcParams['legend.fontsize']    = 14
 mpl.rcParams['xtick.labelsize']    = 16
 mpl.rcParams['ytick.labelsize']    = 16
 
-# ============================================================
-# 見た目（ここだけ触ればOK）
-# ============================================================
-RUN_ALPHA = 0.35     # 各試行の透明度（低すぎると「帯」に見えやすい）
-RUN_LW    = 0.9      # 各試行の線幅（細め）
-RUN_Z     = 1        # 背面
-
-MEAN_ALPHA = 1.0     # 平均線は濃く
-MEAN_LW    = 3.2     # 平均線は太く
-MEAN_Z     = 5        # 前面
-
-THEORY_LW  = 2.5
-THEORY_Z   = 4
-
 
 def _nice_label_from_path(path: str) -> str:
     base = os.path.basename(path)
@@ -76,6 +62,29 @@ def _load_num_uavs_from_param(param_path: str) -> int | None:
         return None
 
 
+def _sanitize_df(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    """
+    以前の表示は維持しつつ、縦縞の主因だけ潰す最小整形:
+    - run 列を保証
+    - step を数値化（文字列事故防止）
+    - (run, step) 重複があれば mean で集約（重複0なら無影響）
+    """
+    df = _ensure_run_column(df)
+
+    df["step"] = pd.to_numeric(df["step"], errors="coerce")
+    df = df.dropna(subset=["step", "J", "true_crop_sum"])
+    df["step"] = df["step"].astype(int)
+
+    dup = df.duplicated(subset=["run", "step"]).sum()
+    if dup > 0:
+        print(f"[WARN] {name}: duplicated (run, step) = {dup} -> mean で集約します（描画の縦縞対策）")
+        df = (
+            df.groupby(["run", "step"], as_index=False)[["J", "true_crop_sum"]]
+              .mean()
+        )
+    return df
+
+
 def plot_two_results_files(
     file1: str,
     file2: str | None = None,
@@ -90,21 +99,19 @@ def plot_two_results_files(
     file2 を指定すると 2条件比較プロットになる。
 
     gamma: 1 UAV あたりの「1秒あたりの減少量 γ」
-    → 理論線: J_ideal(t) = J0 - N_uav * gamma * t
+    → 理論線: J_ideal(t) = J0 - N_uav * (gamma/ds) * t   （★以前仕様）
     """
 
     # ── CSV 読み込み ───────────────────────────
-    df1 = pd.read_csv(file1)
-    df1 = _ensure_run_column(df1)
-    df1 = df1.dropna(subset=["step", "J", "true_crop_sum"])
+    df1_raw = pd.read_csv(file1)
+    df1 = _sanitize_df(df1_raw, "file1")
 
     if label1 is None:
         label1 = _nice_label_from_path(file1)
 
     if file2 is not None:
-        df2 = pd.read_csv(file2)
-        df2 = _ensure_run_column(df2)
-        df2 = df2.dropna(subset=["step", "J", "true_crop_sum"])
+        df2_raw = pd.read_csv(file2)
+        df2 = _sanitize_df(df2_raw, "file2")
 
         if label2 is None:
             label2 = _nice_label_from_path(file2)
@@ -140,7 +147,7 @@ def plot_two_results_files(
             J2_mean = mean2["J"].to_numpy()
             C2_mean = mean2["true_crop_sum"].to_numpy()
 
-    # 色
+    # 色（以前仕様）
     color1 = "tab:blue"
     color2 = "tab:red"
 
@@ -149,7 +156,7 @@ def plot_two_results_files(
     # =====================================================
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # file1: 各 run（10本なら10本全部）
+    # file1: 各 run
     for i, r in enumerate(runs1):
         sub = df1[df1["run"] == r].sort_values("step")
         if sub.empty:
@@ -159,19 +166,15 @@ def plot_two_results_files(
         ax.plot(
             t, J,
             color=color1,
-            alpha=RUN_ALPHA,
-            linewidth=RUN_LW,
-            zorder=RUN_Z,
+            alpha=0.3,
             label=(f"{label1} 各試行" if i == 0 else None),
         )
 
-    # file1: 平均（濃く太く）
+    # file1: 平均（太線）
     ax.plot(
         t1_mean, J1_mean,
         color=color1,
-        alpha=MEAN_ALPHA,
-        linewidth=MEAN_LW,
-        zorder=MEAN_Z,
+        linewidth=3.0,
         label=f"{label1} 平均",
     )
 
@@ -186,22 +189,18 @@ def plot_two_results_files(
             ax.plot(
                 t, J,
                 color=color2,
-                alpha=RUN_ALPHA,
-                linewidth=RUN_LW,
-                zorder=RUN_Z,
+                alpha=0.3,
                 label=(f"{label2} 各試行" if i == 0 else None),
             )
 
         ax.plot(
             t2_mean, J2_mean,
             color=color2,
-            alpha=MEAN_ALPHA,
-            linewidth=MEAN_LW,
-            zorder=MEAN_Z,
+            linewidth=3.0,
             label=f"{label2} 平均",
         )
 
-    # ── 理論直線（file1 の params から N を推定） ──────────────
+    # ── 理論直線（★以前仕様：gamma/ds を掛ける） ──────────────
     if gamma is not None:
         t_common = t1_mean
         J0 = float(J1_mean[0])
@@ -212,14 +211,12 @@ def plot_two_results_files(
             N = 1
             print(f"[WARN] {file1}: num_uavs が取得できなかったので N=1 とみなして理論線を描画します。")
 
-        # 注意：あなたの元コードの仕様を維持（gamma/ds を掛ける）
+        # ★以前仕様を維持
         J_ideal = J0 - N * (gamma / ds) * t_common
 
         ax.plot(
             t_common, J_ideal,
-            "k--",
-            linewidth=THEORY_LW,
-            zorder=THEORY_Z,
+            "k--", linewidth=2.5,
             label=rf"理論直線 $J_0 - N_{{\rm UAV}}\gamma t$ (N={N}, $\gamma={gamma:.2f}$)"
         )
 
@@ -245,18 +242,14 @@ def plot_two_results_files(
         ax.plot(
             t, C,
             color=color1,
-            alpha=RUN_ALPHA,
-            linewidth=RUN_LW,
-            zorder=RUN_Z,
+            alpha=0.3,
             label=(f"{label1} 各試行" if i == 0 else None),
         )
 
     ax.plot(
         t1_mean, C1_mean,
         color=color1,
-        alpha=MEAN_ALPHA,
-        linewidth=MEAN_LW,
-        zorder=MEAN_Z,
+        linewidth=3.0,
         label=f"{label1} 平均",
     )
 
@@ -270,18 +263,14 @@ def plot_two_results_files(
             ax.plot(
                 t, C,
                 color=color2,
-                alpha=RUN_ALPHA,
-                linewidth=RUN_LW,
-                zorder=RUN_Z,
+                alpha=0.3,
                 label=(f"{label2} 各試行" if i == 0 else None),
             )
 
         ax.plot(
             t2_mean, C2_mean,
             color=color2,
-            alpha=MEAN_ALPHA,
-            linewidth=MEAN_LW,
-            zorder=MEAN_Z,
+            linewidth=3.0,
             label=f"{label2} 平均",
         )
 
@@ -295,25 +284,25 @@ def plot_two_results_files(
 
 
 if __name__ == "__main__":
-    # ① 単独ファイル
-    file_single = "miyashita_future_ucb_poster_seed1234_data_1runs_001.csv"
-    plot_two_results_files(
-        file_single,
-        file2=None,
-        label1="条件",
-        dt=0.1,
-        ds=0.5,
-        gamma=6.0,
-    )
-
-    # ② 2条件比較の例
-    # file_A = "multi_uav_multi_ugv_use_path_suenaga_results_10runs.csv"
-    # file_B = "multi_uav_multi_ugv_results_10runs.csv"
+    # ① 単独ファイル（以前表示）
+    # file_single = "test_results_3runs.csv"
     # plot_two_results_files(
-    #     file_A, file_B,
-    #     label1="条件A",
-    #     label2="条件B",
+    #     file_single,
+    #     file2=None,
+    #     label1="条件",
     #     dt=0.1,
     #     ds=0.5,
     #     gamma=3.0,
     # )
+
+    # ② 2条件比較（以前表示）
+    file_A = "multi_uav_multi_ugv_use_path_suenaga_results_10runs.csv"
+    file_B = "multi_uav_multi_ugv_results_10runs.csv"
+    plot_two_results_files(
+        file_A, file_B,
+        label1="条件A",
+        label2="条件B",
+        dt=0.1,
+        ds=0.5,
+        gamma=3.0,
+    )
