@@ -41,6 +41,19 @@ try:
     import yaml
 except ImportError:
     yaml = None
+    
+from matplotlib.colors import ListedColormap, BoundaryNorm
+
+GT_CMAP = ListedColormap(["#1f77b4", "#d62728"])  # 0=blue, 1=red
+GT_NORM = BoundaryNorm([-0.5, 0.5, 1.5], GT_CMAP.N)
+
+def normalize_01(arr: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    a_min = float(np.nanmin(arr))
+    a_max = float(np.nanmax(arr))
+    if a_max - a_min < eps:
+        return np.zeros_like(arr)
+    return (arr - a_min) / (a_max - a_min)
+
 
 
 # ============================================================
@@ -190,6 +203,30 @@ class solver:
         return np.asarray(sol[:2], dtype=float)
 
 
+class VelocityLimitation:
+    def __init__(self, max_velocity: float = 5.0, num_poly: int = 8, slack: float = 0.0):
+        self.max_velocity = float(max_velocity)*math.cos(math.pi/num_poly)
+        self.num_poly = int(num_poly)
+        self.slack = float(slack)
+
+    def calc_cbf(self):
+        """
+        constraints: n_k^T u <= v_max  (k=1..K)
+        solver expects tuples: (bJ, gx, gy, slack)
+        where constraint is: -gx*u_x -gy*u_y <= bJ
+        so choose gx=-n_x, gy=-n_y, bJ=v_max
+        """
+        theta0=0.0
+        cbfs = []
+        for k in range(self.num_poly):
+            th = theta0 + 2.0 * np.pi * k / self.num_poly
+            n_x = float(np.cos(th))
+            n_y = float(np.sin(th))
+            cbfs.append((self.max_velocity, -n_x, -n_y, 0.0))  # slackなし
+        return cbfs
+
+
+
 # ============================================================
 # 1) Sparse Online GP (SOGP) + kernel
 # ============================================================
@@ -329,6 +366,42 @@ class SparseOnlineGP:
         z_raw = mu / np.sqrt(1.0 + (np.pi / 8.0) * var)
         z = float(1.0 / (1.0 + np.exp(-z_raw)))
         return mu, var, z, k_vec, self.C
+    
+    def _calc_now_C(self, position: np.ndarray):
+        """
+        Virtually update C by appending 'position' as a new basis vector.
+        Returns Ctilde of size (N+1, N+1).
+        """
+        N = self.X.shape[0]
+
+        # --- If no basis yet, Ztilde = {position} (size 1) ---
+        if N == 0:
+            k_tt = float(self.kernel(position, position))
+            sigma2 = k_tt  # k_xx
+            denom = sigma2 + self.sigma0**2
+            # C = -(K + sigma^2 I)^-1 for 1x1
+            return np.array([[-1.0 / denom]], dtype=float)
+
+        # --- standard case ---
+        k_vec = np.array([self.kernel(xi, position) for xi in self.X], dtype=float)  # (N,)
+        k_tt = float(self.kernel(position, position))
+
+        # predictive variance sigma^2(x*)
+        sigma2 = float(k_tt + k_vec @ (self.C @ k_vec))
+
+        denom = sigma2 + self.sigma0**2
+        r_t = -1.0 / denom
+        self.r_t=r_t
+
+        # s_t = [C k_vec ; 1]   (W(Ck)+e)
+        s_t = np.concatenate([self.C @ k_vec, [1.0]])  # (N+1,)
+
+        # U(C) : pad last row/col with zeros
+        C_ext = np.pad(self.C, ((0, 1), (0, 1)), mode="constant")  # (N+1,N+1)
+
+        # Ctilde = U(C) + r s s^T
+        C_next = C_ext + r_t * np.outer(s_t, s_t)
+        return C_next
 
 
 # ============================================================
@@ -339,24 +412,30 @@ def environment_function(pos: np.ndarray, true_map: np.ndarray,
                          rng: np.random.Generator,
                          noise_std: float = 0.5) -> List[Tuple[np.ndarray, float]]:
     """
-    ★重要: np.random ではなく rng を使う（再現性）
+    3×3の観測（中心あり＝9点）。
     """
     i0, j0 = int(round(pos[0])), int(round(pos[1]))
     H, W = true_map.shape
-    observations = []
+    observations: List[Tuple[np.ndarray, float]] = []
 
-    for di in (-2, 0, 2):
-        for dj in (-2, 0, 2):
-            i, j = i0 + di, j0 + dj
-            if not (0 <= i < H and 0 <= j < W):
-                continue
+    # for di in (-2, 0, 2):
+    #     for dj in (-2, 0, 2):
+    #         i, j = i0 + di, j0 + dj
+    #         if not (0 <= i < H and 0 <= j < W):
+    #             continue
 
-            imin, imax = max(0, i - 1), min(H, i + 2)
-            jmin, jmax = max(0, j - 1), min(W, j + 2)
-            local_patch = true_map[imin:imax, jmin:jmax]
-            val = float(np.mean(local_patch))
-            noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
-            observations.append((np.array([i, j], dtype=float), noisy))
+    #         imin, imax = max(0, i - 1), min(H, i + 2)
+    #         jmin, jmax = max(0, j - 1), min(W, j + 2)
+    #         local_patch = true_map[imin:imax, jmin:jmax]
+    #         val = float(np.mean(local_patch))
+    #         noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
+    #         observations.append((np.array([i, j], dtype=float), noisy))
+    
+    i, j = i0, j0
+    if 0 <= i < H and 0 <= j < W:
+        val = float(true_map[i, j])
+        noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
+        observations.append((np.array([i, j], dtype=float), noisy))
 
     return observations
 
@@ -375,7 +454,7 @@ def generate_ground_truth_map(grid_size=20):
 
     rect(0.30, 0.70, 0.06, 0.26, 1.0)
     rect(0.20, 0.50, 0.60, 0.92, 1.0)
-    rect(0.80, 0.95, 0.70, 0.90, 1.0)
+    rect(0.70, 0.85, 0.60, 0.80, 1.0)
     rect(0.10, 0.30, 0.10, 0.30, 1.0)
 
     return gt
@@ -450,6 +529,12 @@ class UGVController:
             return (k1 * E + k2 * U) / (d ** 2 + epsilon)
         elif reward_type == 6:
             return E
+        elif reward_type == 7:
+            delta = 0.1
+            beta = 2 * np.log((np.pi ** 2) * (step ** 2) / (6 * delta))
+            epsilon = 1e-8
+            sigma_tilde = np.sqrt(V) / (np.median(np.sqrt(variance_map)) + epsilon)
+            return E - np.sqrt(beta)*sigma_tilde
         else:
             return 0.0
 
@@ -769,6 +854,7 @@ class UAVConfig:
     use_cbf: bool = True
     waypoint_mode: WaypointMode = "common_weighted"
     nominal_mode: NominalMode = "to_waypoint"
+    nominal_hold_steps: int = 5
     use_voronoi: bool = True
 
     use_common_map: bool = False
@@ -831,13 +917,19 @@ class UAVController:
         gp_sensing_noise_sigma0: float = 0.4,
         gp_max_basis: int = 100,
         gp_threshold_delta: float = 0.05,
-        rbf_sigma: float = 2.0,
+        rbf_sigma: float = 2.0
     ):
         self.cfg = cfg
         self.uav_id = uav_id
         self.grid_size = grid_size
         self.ugv_fleet = ugv_fleet
         self.rbf_sigma = rbf_sigma
+        # UAVController.__init__
+        self._nominal_hold_counter = 0
+        self._nominal_hold_steps = 5   # ★ これが効く
+        self._last_waypoint = None
+        self._last_obs_points: Optional[np.ndarray] = None
+
 
         self.pos = train_data_x[0].copy().astype(float)
         self.v = np.zeros(2, dtype=float)
@@ -981,11 +1073,10 @@ class UAVController:
         t_now: float,
         I_i0: float,
         use_voronoi: bool = True,
-        sigma_eps: float | None = None,
     ) -> tuple[np.ndarray, float, float]:
         """
         Returns:
-        xi1 (2,), xi2 (scalar), I_tilde (scalar)
+            xi1 (2,), xi2 (scalar), I_tilde (scalar)
         """
         if sigma_eps is None:
             # 論文の σε（観測ノイズ）に相当：あなたの gp.sigma0 を使うのが自然
@@ -998,30 +1089,37 @@ class UAVController:
         else:
             cells = np.argwhere(np.ones((H, W), dtype=bool))
 
-        # BV set Z[l]（あなたの SOGP では self.gp.X）
-        Z = np.asarray(self.gp.X, dtype=float)      # (N,2)
+        # --- BV set Z[l] ---
+        Z = np.asarray(self.gp.X, dtype=float)     # (N,2)
         N = int(Z.shape[0])
-        p = self.pos.astype(float).copy()           # (2,)
+        p = self.pos.astype(float).copy()         # (2,)
 
+
+        # --- build Ztilde and Ktilde ---
         if N == 0:
-            # BV が無いとき：tilde I はほぼ一定、xi1=0 で OK（まず動く版）
-            I_tilde = float(len(cells)) * 1.0  # k(x*,x*)≈1 の仮置き
-            xi1 = np.zeros(2, dtype=float)
-            xi2 = float(-gamma/(n_robots*ts_sampling) - alpha_J*(I_tilde + gamma*t_now/(n_robots*ts_sampling) - I_i0))
-            return xi1, xi2, I_tilde
+            # BVが空でも拡張集合は {p} なので 1x1
+            Ztilde = p.reshape(1, 2)
+        else:
+            Ztilde = np.vstack([Z, p.reshape(1, 2)])  # (N+1,2)
 
-        # ----- kernel 行列 Ktilde（Z と p をまとめた (N+1)x(N+1)） -----
-        Ztilde = np.vstack([Z, p.reshape(1, 2)])  # (N+1,2)
-        K = np.zeros((N+1, N+1), dtype=float)
-        for i in range(N+1):
-            for j in range(N+1):
-                K[i, j] = self._rbf(Ztilde[i], Ztilde[j])
+        M = Ztilde.shape[0]  # = N+1
+        K = np.zeros((M, M), dtype=float)
+        for i in range(M):
+            for j in range(M):
+                K[i, j] = float(self._rbf(Ztilde[i], Ztilde[j]))
 
-        # 論文の Ctilde = -(K + sigma_eps^2 I)^-1  :contentReference[oaicite:3]{index=3}
-        A = K + (sigma_eps**2) * np.eye(N+1)
-        Ctilde = -np.linalg.inv(A)
+        # --- Ctilde = -(K + sigma_eps^2 I)^-1 ---
+        Ctilde = self.gp._calc_now_C(p)
+        L2=self.r2
 
-        # ----- 各 x* について z* = Ctilde k* を作って積算 -----
+        # --- precompute terms for the second sum in (12) ---
+        if N > 0:
+            p_minus_Z = p.reshape(1, 2) - Z                      # (N,2)
+            k_pZ = np.array([self._rbf(p, Z[j]) for j in range(N)], dtype=float)  # (N,)
+        else:
+            p_minus_Z = np.zeros((0, 2), dtype=float)
+            k_pZ = np.zeros((0,), dtype=float)
+
         xi1 = np.zeros(2, dtype=float)
         I_tilde = 0.0
         L2 = float(self.rbf_sigma ** 2)  # 論文の L^2 に相当（RBF length scale^2）:contentReference[oaicite:4]{index=4}
@@ -1031,34 +1129,49 @@ class UAVController:
         k_pZ = np.array([self._rbf(p, Z[j]) for j in range(N)], dtype=float)  # (N,)
 
         for (i, j) in cells:
-            xstar = np.array([float(i), float(j)], dtype=float)
+            xstar = np.array([float(i), float(j)], dtype=float)  # grid→worldなら変換してね
 
-            # k* = [k(Z1,x*),...,k(ZN,x*),k(p,x*)]
-            k_Zx = np.array([self._rbf(Z[q], xstar) for q in range(N)], dtype=float)  # (N,)
+            # k* of length (N+1)
+            if N > 0:
+                k_Zx = np.array([self._rbf(Z[q], xstar) for q in range(N)], dtype=float)
+            else:
+                k_Zx = np.zeros((0,), dtype=float)
+
             k_px = float(self._rbf(p, xstar))
-            kstar = np.concatenate([k_Zx, [k_px]])  # (N+1,)
+            kstar = np.concatenate([k_Zx, [k_px]])               # (N+1,)
 
-            z = Ctilde @ kstar  # (N+1,)
-            z_last = float(z[-1])
+            # z* = Ctilde k*
+            z = Ctilde @ kstar
+            z_last = float(z[-1])                                # [z*]_{N+1}
 
             # 分散（tilde sigma^2）を足す：sigma^2 = k(x*,x*) + k*^T Ctilde k*  :contentReference[oaicite:5]{index=5}
             sigma2 = 1.0 + float(kstar.T @ Ctilde @ kstar)
             I_tilde += sigma2
 
-            # (12) の中身を作る :contentReference[oaicite:6]{index=6}
-            term_x = (k_px / L2) * (p - xstar)  # (2,)
-            # Σ_j z_j * k(p,x_j)/L^2 * (p - x_j)
-            zj = z[:-1]  # (N,)
-            term_Z = ((zj * k_pZ)[:, None] * (p_minus_Z / L2)).sum(axis=0)  # (2,)
+            # xi1 accumulation (12)
+            term_x = (k_px / L2) * (p - xstar)                   # (2,)
 
-            xi1 += 2.0 * z_last * (term_x + term_Z)
+            if N > 0:
+                zj = z[:-1]                                      # (N,)
+                term_Z = ((zj * k_pZ)[:, None] * (p_minus_Z / L2)).sum(axis=0)  # (2,)
+            else:
+                term_Z = np.zeros(2, dtype=float)
 
-        # (13) :contentReference[oaicite:7]{index=7}
+                    xi1 += 2.0 * z_m * (term_x + term_Z)
+
+        # --- set I0 only once (fixed reference) ---
+        if self._I0 is None:
+            self._I0 = float(I_tilde)
+            self._I_prev = float(I_tilde)   # optional: for logging
+        I_i0 = float(self._I0)
+
+        # xi2 (13)
         xi2 = float(
             -gamma/(n_robots*ts_sampling)
             - alpha_J*(I_tilde + gamma*t_now/(n_robots*ts_sampling) - I_i0)
         )
         return xi1, xi2, float(I_tilde)
+
 
 
 >>>>>>> 7ee82bb (add)
@@ -1257,29 +1370,37 @@ class UAVController:
         centroid[1] = float(np.clip(centroid[1], 0, W - 1))
         return centroid.astype(float)
 
-    def _choose_waypoint(self, V_map: np.ndarray) -> np.ndarray:
+    def _choose_waypoint(self, V_map):
+        # ---- 1) ヒステリシス ----
+        if self._nominal_hold_counter > 0 and self._last_waypoint is not None:
+            self._nominal_hold_counter -= 1
+            return self._last_waypoint
+
         cfg = self.cfg
 
+        # ---- 2) 新規 waypoint 計算 ----
         if cfg.waypoint_mode == "suenaga_dp":
-            return self.path_generation_for_uav_suenaga(
+            wp = self.path_generation_for_uav_suenaga(
                 var_map=V_map,
                 rho=cfg.suenaga_rho,
                 depth=cfg.suenaga_depth,
                 use_voronoi=cfg.use_voronoi
             )
 
-        if cfg.waypoint_mode == "miyashita":
+        elif cfg.waypoint_mode == "miyashita":
             V_use = self.ugv_weighted_var_map if (self.ugv_weighted_var_map is not None) else V_map
-            return self.path_generation_for_uav(
+            wp = self.path_generation_for_uav(
                 var_map=V_use,
                 d0=cfg.d0,
                 use_voronoi=cfg.use_voronoi
             )
 
-        if cfg.waypoint_mode == "ugv_future_point":
-            cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
+        elif cfg.waypoint_mode == "ugv_future_point":
+            cy, cx = self.ugv_fleet.target_cell_for_uav(
+                self.pos, step_offset=cfg.step_of_ugv_path_used
+            )
             ugv_future = np.array([cy, cx], dtype=float)
-            return self.path_generation_for_high_variance_point_including_effect_of_ugv(
+            wp = self.path_generation_for_high_variance_point_including_effect_of_ugv(
                 var_map=V_map,
                 ugv_future_point=ugv_future,
                 d0=cfg.d0,
@@ -1287,14 +1408,22 @@ class UAVController:
                 use_voronoi=cfg.use_voronoi
             )
 
-        V_use = self.ugv_weighted_var_map if (self.ugv_weighted_var_map is not None) else V_map
-        return self.path_generation_for_high_variance_point_including_effect_of_ugv(
-            var_map=V_use,
-            ugv_future_point=None,
-            d0=cfg.d0,
-            ell=cfg.ugv_future_path_sigma,
-            use_voronoi=cfg.use_voronoi
-        )
+        else:
+            V_use = self.ugv_weighted_var_map if (self.ugv_weighted_var_map is not None) else V_map
+            wp = self.path_generation_for_high_variance_point_including_effect_of_ugv(
+                var_map=V_use,
+                ugv_future_point=None,
+                d0=cfg.d0,
+                ell=cfg.ugv_future_path_sigma,
+                use_voronoi=cfg.use_voronoi
+            )
+
+        # ---- 3) 保存 & hold セット ----
+        self._last_waypoint = wp
+        self._nominal_hold_counter = cfg.nominal_hold_steps  # 例: 5〜10
+
+        return wp
+
 
     def _compute_nominal(self, waypoint: np.ndarray, fused_amb: Optional[np.ndarray] = None) -> np.ndarray:
         cfg = self.cfg
@@ -1365,8 +1494,24 @@ class UAVController:
         cfg = self.cfg
         use_icbf=False
 
-        self.update_map(env_fn)
-        self.update_maps_for_ugv()
+        # --- GP観測の間引き（例: 5stepに1回）---
+        steps_per_gp = max(1, int(round(cfg.gp_update_period / cfg.control_period)))
+        do_update = (step is None) or ((step % steps_per_gp) == 0)
+
+        if do_update:
+            # 1) GPを更新
+            self.update_map(env_fn)
+            self._sample_count += 1
+
+            # 2) ★即座に map を再計算してキャッシュ更新（ズレ解消）
+            self._cached_mean_map, self._cached_var_map, self._cached_prob_map = self.get_map_estimates()
+
+            # 3) publish counterもリセット（次の定期更新までのカウントを綺麗にする）
+            self._publish_counter = 0.0
+        else:
+            # GP更新が無いステップだけ、従来通り publish周期で更新
+            self.update_maps_for_ugv()
+
         _, V_map, P_map = self.get_maps_for_ugv()
 
         if cfg.uav_waypoint_signal == "prob_ambiguity":
@@ -1379,7 +1524,7 @@ class UAVController:
         self.current_waypoint = waypoint
 
         v_nom = self._compute_nominal(waypoint, fused_amb=fused_amb)
-        if not use_icbf:
+        if use_icbf:
             nu_nom = (v_nom - self.v) / cfg.control_period
         else:
             nu_nom = np.zeros(2, dtype=float)
@@ -1387,28 +1532,60 @@ class UAVController:
         if not cfg.use_cbf:
             self.v = v_nom
         else:
-            if not use_icbf:
+            if use_icbf:
                 xi_J1, xi_J2 = self.calc_icbf_terms(self.v, gamma=cfg.cbf_j_gamma, alpha=cfg.cbf_j_alpha)
             else:
                 if fused_var is None or step is None:
                     raise ValueError("fused_var and step are required for J-based CBF")
-                J_now = self.calc_objective_function(fused_var)
+                # ---- (A) I_i0 を初回だけ決める（論文の I_{i0}）----
+                if self._I0 is None:
+                    _, _, I0 = self.calc_cbf_terms(
+                        alpha_J=cfg.cbf_j_alpha,
+                        gamma=cfg.cbf_j_gamma,
+                        n_robots=int(cfg.num_uavs),
+                        ts_sampling=float(cfg.gp_update_period),
+                        t_now=0.0,
+                        use_voronoi=cfg.use_voronoi,
+                    )
+                    self._I0 = float(I0)
+                    self._I_prev = float(I0)
+
+                t_now = float(step * cfg.control_period)
                 xi_J1, xi_J2 ,I_tilde= self.calc_cbf_terms(
                     alpha_J=cfg.cbf_j_alpha,
                     gamma=cfg.cbf_j_gamma,
-                    n_robots=len(self.ugv_fleet.ugvs) + 1,
-                    ta_sampling=cfg.,
-                    gamma=cfg.cbf_j_gamma,
-                    alpha=cfg.cbf_j_alpha,
-                    J0=float(self.J0 if self.J0 is not None else J_now),
-                    t=float(step),
+                    n_robots=int(cfg.num_uavs),
+                    ts_sampling=float(cfg.gp_update_period),
+                    t_now=t_now,
+                    use_voronoi=cfg.use_voronoi,
                 )
-            cbf_J = [float(-xi_J2), float(-xi_J1[0]), float(-xi_J1[1]), 0.0001]
+                print("分散変化量=", I_tilde - self._I_prev, "I_0=", self._I0, "I_tilde=", I_tilde)
+                self._I_prev=I_tilde
+            cbf_J = [float(xi_J2), float(xi_J1[0]), float(xi_J1[1]), -0.1]
+            print("I_i0=", self._I0)
+            print("I_tilde=", I_tilde)
+
+            velocity_limitation = VelocityLimitation(cfg.v_limit, cfg.num_poly, slack=0.0)
+            speed_cbfs = velocity_limitation.calc_cbf()
 
             qp = solver()
-            qp.add_cbfs([tuple(cbf_J)])
-            nu = qp.solve(nu_nom)
-            self.v = self.v + nu * cfg.control_period
+            qp.add_cbfs([tuple(cbf_J), *speed_cbfs])
+            #qp.add_cbfs([tuple(cbf_J)])
+            if use_icbf:
+                nu = qp.solve(nu_nom)
+                self.v = self.v + nu * cfg.control_period
+            else:
+                u_star=qp.solve(v_nom)
+                self.v = u_star
+                # --- after solving QP ---
+                u = self.v.copy()  # 今回は self.v = u_star にしてるので
+
+                lhs = float(xi_J1 @ u + xi_J2)   # >= 0 なら制約OK
+                print("feasible@u=0?", (lhs >= 0.0))
+                #print("r_t",self.gp.r_t)
+                #print(f"[CBF CHECK] step={step} w = {qp.slack:+.6e}")
+                print("velocity=", self.v)
+
 
         spd = float(np.linalg.norm(self.v))
         if spd > cfg.v_limit:
@@ -1467,6 +1644,7 @@ def run_once(
     run_idx: int,
     master_seed: int,
     scenario_id: str,
+    run_root: str
 ) -> tuple[pd.DataFrame, dict]:
     grid_size = int(deep_get(params, "grid_size", 30))
     noise_std = float(deep_get(params, "noise_std", 0.5))
@@ -1527,7 +1705,7 @@ def run_once(
 
     # visualize
     colors = ['r', '#ff7f0e', 'm', 'y', 'g', 'b']
-    ugv_colors = ['k', '#444444', '#111111', '#888888']
+    ugv_colors = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#a65628"]
 
     trajs_uav = [[u.pos.copy()] for u in uavs]
     trajs_ugv = [[u.position.copy()] for u in ugvs]
@@ -1612,6 +1790,140 @@ def run_once(
         for c in base_cols:
             if c not in ugv_log:
                 ugv_log[c] = []
+
+
+    def plot_and_save_maps_snapshot(
+        step: int,
+        fused_mean: np.ndarray,
+        fused_var: np.ndarray,
+        gt: np.ndarray,
+        trajs_uav: list[list[np.ndarray]],
+        trajs_ugv: list[list[np.ndarray]],
+        out_dir: str,
+        colors: list[str],
+        ugv_colors: list[str],
+        scenario_id: str,
+        master_seed: int,
+        run_idx: int,
+        show: bool = False,
+    ):
+        os.makedirs(out_dir, exist_ok=True)
+
+        save_path = os.path.join(
+            out_dir,
+            f"maps_{scenario_id}_seed{master_seed}_run{run_idx}_step{step:05d}.png"
+        )
+
+        was_interactive = plt.isinteractive()
+        plt.ioff()
+
+        fig2, ax2 = plt.subplots(1, 3, figsize=(18, 5))
+        for a in ax2:
+            a.set_aspect("equal")
+            a.set_xlim(0, fused_mean.shape[1] - 1)
+            a.set_ylim(0, fused_mean.shape[0] - 1)
+
+        # =========================
+        # (1) mean + UGV paths
+        # =========================
+        im0 = ax2[0].imshow(
+            normalize_01(fused_mean),
+            cmap="jet", origin="lower",
+            vmin=0, vmax=1
+        )
+        ax2[0].contour(gt, levels=[0.5], colors="white", linewidths=2, origin="lower")
+        ax2[0].set_title(f"Mean + UGV paths (step={step})")
+        plt.colorbar(im0, ax=ax2[0], fraction=0.046, pad=0.04)
+
+        for i, tr in enumerate(trajs_ugv):
+            arr = np.asarray(tr, dtype=float)
+            if arr.ndim == 2 and arr.shape[0] >= 2:
+                # path line
+                ax2[0].plot(
+                    arr[:, 1], arr[:, 0],
+                    "-", linewidth=3.0,
+                    color=ugv_colors[i % len(ugv_colors)],
+                    label=f"UGV{i}",
+                    zorder=20,
+                )
+                # current position (丸)
+                y_cur, x_cur = float(arr[-1, 0]), float(arr[-1, 1])
+                ax2[0].plot(
+                    x_cur, y_cur,
+                    marker="o", markersize=9,
+                    mfc="white", mec=ugv_colors[i % len(ugv_colors)], mew=2.5,
+                    linestyle="None",
+                    zorder=50,
+                )
+
+        # 凡例：枠の外（下）
+        ax2[0].legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.14),
+            ncol=2,
+            fontsize=9,
+            frameon=True,
+        )
+
+        # =========================
+        # (2) var + UAV paths
+        # =========================
+        im1 = ax2[1].imshow(
+            normalize_01(fused_var),
+            cmap="jet", origin="lower",
+            vmin=0, vmax=1
+        )
+        ax2[1].contour(gt, levels=[0.5], colors="white", linewidths=2, origin="lower")
+        ax2[1].set_title(f"Var + UAV paths (step={step})")
+        plt.colorbar(im1, ax=ax2[1], fraction=0.046, pad=0.04)
+
+        for i, tr in enumerate(trajs_uav):
+            arr = np.asarray(tr, dtype=float)
+            if arr.ndim == 2 and arr.shape[0] >= 2:
+                # path line
+                ax2[1].plot(
+                    arr[:, 1], arr[:, 0],
+                    "-", linewidth=2.8,
+                    color=colors[i % len(colors)],
+                    label=f"UAV{i}",
+                    zorder=20,
+                )
+                # current position (丸)
+                y_cur, x_cur = float(arr[-1, 0]), float(arr[-1, 1])
+                ax2[1].plot(
+                    x_cur, y_cur,
+                    marker="o", markersize=9,
+                    mfc="white", mec=colors[i % len(colors)], mew=2.5,
+                    linestyle="None",
+                    zorder=50,
+                )
+
+        ax2[1].legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.14),
+            ncol=2,
+            fontsize=9,
+            frameon=True,
+        )
+
+        # =========================
+        # (3) ground truth (blue/red)
+        # =========================
+        im2 = ax2[2].imshow(gt, cmap=GT_CMAP, origin="lower", vmin=0, vmax=1)
+        ax2[2].set_title("Ground truth (blue=0, red=1)")
+        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04, ticks=[0, 1])
+
+        # tight_layout は使わず、凡例スペースを確保
+        fig2.subplots_adjust(bottom=0.23, wspace=0.35)
+
+        fig2.savefig(save_path, dpi=200)
+        print(f"[SAVE] snapshot -> {save_path}")
+
+        plt.close(fig2)   # ←必須
+        if was_interactive:
+            plt.ion()
+
+
 
     # sim loop
     for step in range(steps):
@@ -1766,12 +2078,141 @@ def run_once(
             fig.canvas.draw()
             plt.pause(0.01)
 
+            if visualize and (step % 100 == 0):
+                out_dir_vis = os.path.join(
+                    run_root,
+                    "snapshots",
+                    f"run{run_idx:02d}"
+                )
+                plot_and_save_maps_snapshot(
+                    step=step,
+                    fused_mean=fused_mean,
+                    fused_var=fused_var,
+                    gt=gt,
+                    trajs_uav=trajs_uav,
+                    trajs_ugv=trajs_ugv,
+                    out_dir=out_dir_vis,
+                    colors=colors,
+                    ugv_colors=ugv_colors,
+                    scenario_id=scenario_id,
+                    master_seed=master_seed,
+                    run_idx=run_idx,
+                    show=False,
+                )
+
+
         if step % 100 == 0:
             print(f"[RUN {run_idx}] step={step} J={J:.3f}, True crop sum={total_crop:.3f}")
 
     if visualize:
         plt.ioff()
         plt.close(fig)
+
+    # ==========================
+    # Final summary visualization (3 panels)
+    # ==========================
+    if visualize:
+        final_mean = fused_mean
+        final_var  = fused_var
+        final_gt   = gt
+        was_interactive = plt.isinteractive()
+        plt.ioff()
+
+        out_dir_vis = os.path.join(run_root, "final")   # ここも散らからないように分ける
+        os.makedirs(out_dir_vis, exist_ok=True)
+        save_path = os.path.join(
+            out_dir_vis,
+            f"final_maps_{scenario_id}_seed{master_seed}_run{run_idx}.png"
+        )
+
+        fig2, ax2 = plt.subplots(1, 3, figsize=(18, 5))
+        for a in ax2:
+            a.set_aspect("equal")
+            a.set_xlim(0, grid_size - 1)
+            a.set_ylim(0, grid_size - 1)
+
+        # (1) Mean + UGV paths
+        im0 = ax2[0].imshow(final_mean, cmap="jet", origin="lower")
+        ax2[0].contour(final_gt, levels=[0.5], colors="white", linewidths=2, origin="lower")
+        ax2[0].set_title("Final mean + UGV paths")
+        plt.colorbar(im0, ax=ax2[0], fraction=0.046, pad=0.04)
+
+        for i, tr in enumerate(trajs_ugv):
+            arr = np.asarray(tr, dtype=float)
+            if arr.ndim == 2 and arr.shape[0] >= 2:
+                ax2[0].plot(
+                    arr[:, 1], arr[:, 0],
+                    "-", linewidth=3.0,
+                    color=ugv_colors[i % len(ugv_colors)],
+                    label=f"UGV{i}",
+                    zorder=20,
+                )
+                y_cur, x_cur = float(arr[-1, 0]), float(arr[-1, 1])
+                ax2[0].plot(
+                    x_cur, y_cur,
+                    marker="o", markersize=9,
+                    mfc="white", mec=ugv_colors[i % len(ugv_colors)], mew=2.5,
+                    linestyle="None",
+                    zorder=50,
+                )
+
+        ax2[0].legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.14),
+            ncol=2,
+            fontsize=9,
+            frameon=True,
+        )
+
+        # (2) Var + UAV paths
+        im1 = ax2[1].imshow(final_var, cmap="jet", origin="lower")
+        ax2[1].contour(final_gt, levels=[0.5], colors="white", linewidths=2, origin="lower")
+        ax2[1].set_title("Final variance + UAV paths")
+        plt.colorbar(im1, ax=ax2[1], fraction=0.046, pad=0.04)
+
+        for i, tr in enumerate(trajs_uav):
+            arr = np.asarray(tr, dtype=float)
+            if arr.ndim == 2 and arr.shape[0] >= 2:
+                ax2[1].plot(
+                    arr[:, 1], arr[:, 0],
+                    "-", linewidth=2.8,
+                    color=colors[i % len(colors)],
+                    label=f"UAV{i}",
+                    zorder=20,
+                )
+                y_cur, x_cur = float(arr[-1, 0]), float(arr[-1, 1])
+                ax2[1].plot(
+                    x_cur, y_cur,
+                    marker="o", markersize=9,
+                    mfc="white", mec=colors[i % len(colors)], mew=2.5,
+                    linestyle="None",
+                    zorder=50,
+                )
+
+        ax2[1].legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.14),
+            ncol=2,
+            fontsize=9,
+            frameon=True,
+        )
+
+        # (3) Ground truth
+        im2 = ax2[2].imshow(final_gt, cmap=GT_CMAP, origin="lower", vmin=0, vmax=1)
+        ax2[2].set_title("Ground truth (blue=0, red=1)")
+        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04, ticks=[0, 1])
+
+        fig2.subplots_adjust(bottom=0.23, wspace=0.35)
+        fig2.savefig(save_path, dpi=200)
+        print(f"[SAVE] final maps figure -> {save_path}")
+
+        plt.close(fig2)
+
+        # ===== 元に戻す =====
+        if was_interactive:
+            plt.ion()
+
+
 
     visited_union = np.zeros_like(gt, dtype=bool)
     for u in ugvs:
@@ -1863,6 +2304,7 @@ def build_cfg_from_params(params: dict) -> UAVConfig:
         use_cbf=bool(deep_get(params, "cfg.use_cbf", True)),
         waypoint_mode=str(deep_get(params, "cfg.waypoint_mode", "miyashita")),
         nominal_mode=str(deep_get(params, "cfg.nominal_mode", "to_waypoint")),
+        nominal_hold_steps=int(deep_get(params, "cfg.nominal_hold_steps", 5)),
         use_voronoi=bool(deep_get(params, "cfg.use_voronoi", True)),
 
         use_common_map=bool(deep_get(params, "cfg.use_common_map", True)),
@@ -1949,19 +2391,27 @@ def main_multi():
     if args.visualize and args.num_runs > 1:
         print("[WARN] visualize=True with num_runs>1 is heavy. Consider --num_runs 1.")
 
-    out_dir = str(deep_get(params, "RESULTS_DIR", "results"))
+    base_results_dir = str(deep_get(params, "RESULTS_DIR", "results"))
     run_name = str(deep_get(params, "RUN_NAME", "direction_weighted"))
+
+    run_root = os.path.join(
+        base_results_dir,
+        f"{run_name}_{args.scenario_id}_seed{args.master_seed}"
+    )
+    os.makedirs(run_root, exist_ok=True)
+
     auto_inc = bool(deep_get(params, "AUTO_INCREMENT", True))
-    _ensure_dir(out_dir)
+    _ensure_dir(run_root)
 
     data_csv_path, params_csv_path = build_result_paths(
-        results_dir=out_dir,
+        results_dir=run_root,
         run_name=_make_run_name(run_name),
         scenario_id=args.scenario_id,
         num_runs=args.num_runs,
         master_seed=args.master_seed,
         auto_increment=auto_inc
     )
+
 
     all_data = []
     all_params_rows = []
@@ -1973,7 +2423,8 @@ def main_multi():
             cfg=cfg,
             run_idx=run_idx,
             master_seed=args.master_seed,
-            scenario_id=args.scenario_id
+            scenario_id=args.scenario_id,
+            run_root=run_root,
         )
         all_data.append(df_run)
         all_params_rows.append(row)

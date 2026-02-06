@@ -28,6 +28,7 @@ cfg:
   # nominal_mode: to_ugv_future
   nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
   # nominal_mode: to_ugv_reachable_best_amb
+  nominal_hold_steps: 5
 
   use_voronoi: true
 
@@ -39,6 +40,7 @@ cfg:
   d0: 5.0
   ugv_future_path_sigma: 5.0
   step_of_ugv_path_used: 6
+  gp_update_period: 0.5
 
   ring_d_star: 8.0
   ring_sigma: 4.0
@@ -76,4 +78,4 @@ cfg.dir_normalize: true
   wp_min_dist: 2.0
   wp_power: 1.0
 
-cfg.ugv_move_period: 5
+  ugv_move_period: 10
