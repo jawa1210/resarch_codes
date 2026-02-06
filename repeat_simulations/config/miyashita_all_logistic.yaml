@@ -1,18 +1,18 @@
 RESULTS_DIR: results
-RUN_NAME: miyashita_all_logistic
+RUN_NAME: miyashita_logistic
 AUTO_INCREMENT: true
 
 grid_size: 30
 noise_std: 0.5
 num_uavs: 3
 num_ugvs: 2
-steps: 4800
+steps: 1000
 
-ugv_depth: 8
-reward_type: 6
+ugv_depth: 7
+reward_type: 3
 discount_factor: 0.95
 
-gp_sensing_noise_sigma0: 0.4
+gp_sensing_noise_sigma0: 0.1
 gp_max_basis: 150
 gp_threshold_delta: 0.05
 rbf_sigma: 2.0
@@ -20,45 +20,49 @@ rbf_sigma: 2.0
 cfg:
   use_cbf: true
   waypoint_mode: miyashita
-  # waypoint_mode: suenaga_dp
-  # waypoint_mode: ugv_future_point
-  # waypoint_mode: common_weighted
+  #waypoint_mode: suenaga_dp
+  #waypoint_mode: ugv_future_point
+  #waypoint_mode: common_weighted
 
-  # nominal_mode: to_waypoint
-  # nominal_mode: to_ugv_future
-  # nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
+  #nominal_mode: to_waypoint
+  #nominal_mode : to_ugv_future
+  #nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
   nominal_mode: to_ugv_reachable_best_amb
+
+  nominal_hold_steps: 5
+
 
   use_voronoi: true
 
   use_common_map: false
   common_map_mode: direction
-  # common_map_mode:point
+  #common_map_mode:point
   ugv_weight_eta: 0.3
 
   d0: 5.0
   ugv_future_path_sigma: 5.0
-  step_of_ugv_path_used: 6
+  step_of_ugv_path_used: 7
 
   ring_d_star: 8.0
   ring_sigma: 4.0
-  use_ring: false
 
   suenaga_rho: 0.95
   suenaga_depth: 5
 
-  k_pp: 2.0
-  k_ugv: 2.0
+  k_pp: 1.0
+  k_ugv: 1.0
   v_limit: 5.0
+  num_poly: 8
   control_period: 0.1
+  gp_update_period: 0.5
 
-  cbf_j_alpha: 1.0
-  cbf_j_gamma: 3.0
+  cbf_j_alpha: 0.01
+  cbf_j_gamma: 6.0
 
   signal_mode: gp_logistic_prob
-  # signal_mode: gp_mean
+  #signal_mode: gp_mean
 
-  # uav_waypoint_signal: gp_var
+  #uav_waypoint_signal: gp_var
   uav_waypoint_signal: prob_ambiguity
 
   map_publish_period: 0.5
@@ -76,4 +80,4 @@ cfg:
   wp_min_dist: 2.0
   wp_power: 1.0
 
-  ugv_move_period: 5
+  ugv_move_period: 10

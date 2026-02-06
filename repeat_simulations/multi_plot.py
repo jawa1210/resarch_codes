@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import japanize_matplotlib  # noqa: F401
 import os
+import numpy as np
 
 # ── フォント設定 ────────────────────────────────
 mpl.rcParams['font.family']        = 'IPAexGothic'
@@ -91,14 +92,16 @@ def _sanitize_df(df: pd.DataFrame, name: str) -> pd.DataFrame:
 
 
 def plot_two_results_files(
-    file1: str,
-    file2: str | None = None,
-    label1: str | None = None,
-    label2: str | None = None,
-    dt: float = 0.1,
-    ds: float = 0.5,
-    gamma: float | None = 3.0,
-):
+        file1: str,
+        file2: str | None = None,
+        label1: str | None = None,
+        label2: str | None = None,
+        dt: float = 0.1,
+        ds: float = 0.5,
+        gamma: float | None = 3.0,
+        max_step: int | None = None,     # ★追加: この step まで
+        max_time: float | None = None,   # ★追加: この時間(s)まで（max_stepより優先）
+    ):
     """
     file2 を None にすると単独ファイルのプロットになる。
     file2 を指定すると 2条件比較プロットになる。
@@ -107,9 +110,22 @@ def plot_two_results_files(
     → 理論線: J_ideal(t) = J0 - N_uav * (gamma/ds) * t   （★以前仕様）
     """
 
+    has_second = False
     # ── CSV 読み込み ───────────────────────────
     df1_raw = pd.read_csv(file1)
     df1 = _sanitize_df(df1_raw, "file1")
+
+    # ── 表示区間のカット ─────────────────────────
+    if max_time is not None:
+        max_step_eff = int(np.floor(max_time / dt))
+    else:
+        max_step_eff = max_step
+
+    if max_step_eff is not None:
+        df1 = df1[df1["step"] <= max_step_eff].copy()
+        if has_second:
+            df2 = df2[df2["step"] <= max_step_eff].copy()
+
 
     if label1 is None:
         label1 = _nice_label_from_path(file1)
@@ -290,24 +306,25 @@ def plot_two_results_files(
 
 if __name__ == "__main__":
     # ① 単独ファイル（以前表示）
-    # file_single = "test_results_3runs.csv"
+    file_single = "test_results_3runs.csv"
+    plot_two_results_files(
+        file_single,
+        file2=None,
+        label1="条件",
+        dt=0.1,
+        ds=0.5,
+        gamma=3.0,
+        max_step=1200
+    )
+
+    # ② 2条件比較（以前表示）
+    # file_A = "multi_uav_multi_ugv_use_path_suenaga_results_10runs.csv"
+    # file_B = "multi_uav_multi_ugv_results_10runs.csv"
     # plot_two_results_files(
-    #     file_single,
-    #     file2=None,
-    #     label1="条件",
+    #     file_A, file_B,
+    #     label1="条件A",
+    #     label2="条件B",
     #     dt=0.1,
     #     ds=0.5,
     #     gamma=3.0,
     # )
-
-    # ② 2条件比較（以前表示）
-    file_A = "multi_uav_multi_ugv_use_path_suenaga_results_10runs.csv"
-    file_B = "multi_uav_multi_ugv_results_10runs.csv"
-    plot_two_results_files(
-        file_A, file_B,
-        label1="条件A",
-        label2="条件B",
-        dt=0.1,
-        ds=0.5,
-        gamma=3.0,
-    )

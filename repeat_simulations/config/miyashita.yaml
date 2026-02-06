@@ -1,15 +1,15 @@
 RESULTS_DIR: results
-RUN_NAME: miyashita_future_ucb
+RUN_NAME: miyashita_normailze_sigma_ucb
 AUTO_INCREMENT: true
 
 grid_size: 30
 noise_std: 0.5
-num_uavs: 3
+num_uavs: 4
 num_ugvs: 2
-steps: 50
+steps: 1000
 
-ugv_depth: 8
-reward_type: 3
+ugv_depth: 7
+reward_type: 7
 discount_factor: 0.95
 
 gp_sensing_noise_sigma0: 0.1
@@ -29,6 +29,8 @@ cfg:
   nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
   #nominal_mode:to_ugv_reachable_best_amb
 
+  nominal_hold_steps: 5
+
 
   use_voronoi: true
 
@@ -39,7 +41,7 @@ cfg:
 
   d0: 5.0
   ugv_future_path_sigma: 5.0
-  step_of_ugv_path_used: 6
+  step_of_ugv_path_used: 7
 
   ring_d_star: 8.0
   ring_sigma: 4.0
@@ -47,13 +49,15 @@ cfg:
   suenaga_rho: 0.95
   suenaga_depth: 5
 
-cfg.k_pp: 1.0
-cfg.k_ugv: 1.0
-cfg.v_limit: 5.0
-cfg.control_period: 0.1
+  k_pp: 1.0
+  k_ugv: 1.0
+  v_limit: 5.0
+  num_poly: 8
+  control_period: 0.1
+  gp_update_period: 0.5
 
   cbf_j_alpha: 1.0
-  cbf_j_gamma: 0.1
+  cbf_j_gamma: 6.0
 
   #signal_mode: gp_logistic_prob
   signal_mode: gp_mean
