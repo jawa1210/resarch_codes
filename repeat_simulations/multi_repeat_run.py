@@ -1924,7 +1924,7 @@ def run_once(
 
     #gt = generate_ground_truth_map(grid_size)
     gt_seed = _stable_int_seed(master_seed, run_idx, grid_size, num_uavs, num_ugvs, "gt")
-    gt = generate_ground_truth_map_scalar(grid_size, seed=gt_seed, num_blobs=２0)
+    gt = generate_ground_truth_map_scalar(grid_size, seed=gt_seed, num_blobs=20)
 
     # --- dynamic harvest states ---
     gt_initial = gt.copy()  # 評価・可視化用に元GTを保存したいなら残す
