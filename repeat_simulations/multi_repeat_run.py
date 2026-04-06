@@ -597,21 +597,34 @@ def compute_voronoi_masks(positions: list[np.ndarray], H: int, W: int) -> list[n
 # ============================================================
 
 class UGVController:
-    def __init__(self, grid_size: int = 20, reward_type: int = 0, discount_factor: float = 0.95):
+    def __init__(
+        self,
+        grid_size: int = 20,
+        reward_type: int = 0,
+        discount_factor: float = 0.95,
+        revisit_penalty: float = 0.3,
+    ):
         self.grid_size = grid_size
         self.reward_type = reward_type
         self.position = np.array([grid_size // 2, grid_size // 2], dtype=int)
         self.visited = np.zeros((grid_size, grid_size), dtype=bool)
         self.visited[self.position[0], self.position[1]] = True
         self.discount_factor = discount_factor
+        self.revisit_penalty = float(revisit_penalty)
 
-    def _calculate_reward(self, pos: np.ndarray, current_pos: np.ndarray,
-                          expectation_map: np.ndarray, variance_map: np.ndarray,
-                          ambiguity_map: Optional[np.ndarray],
-                          k1, k2, k3, k4, k5, k6, epsilon,
-                          reward_type: int, step: int) -> float:
+    def _calculate_reward(
+        self,
+        pos: np.ndarray,
+        current_pos: np.ndarray,
+        remaining_map: np.ndarray,
+        variance_map: np.ndarray,
+        ambiguity_map: Optional[np.ndarray],
+        k1, k2, k3, k4, k5, k6, epsilon,
+        reward_type: int,
+        step: int,
+    ) -> float:
         d = float(np.linalg.norm(pos - current_pos))
-        E = float(expectation_map[pos[0], pos[1]])
+        E = float(remaining_map[pos[0], pos[1]])
         V = float(variance_map[pos[0], pos[1]])
         U = 0.0 if ambiguity_map is None else float(ambiguity_map[pos[0], pos[1]])
 
@@ -634,19 +647,26 @@ class UGVController:
         elif reward_type == 7:
             delta = 0.1
             beta = 2 * np.log((np.pi ** 2) * (step ** 2) / (6 * delta))
-            epsilon = 1e-8
-            sigma_tilde = np.sqrt(V) / (np.median(np.sqrt(variance_map)) + epsilon)
-            return E - np.sqrt(beta)*sigma_tilde
+            eps2 = 1e-8
+            sigma_tilde = np.sqrt(V) / (np.median(np.sqrt(variance_map)) + eps2)
+            return E - np.sqrt(beta) * sigma_tilde
         else:
             return 0.0
 
-    def _recursive_search(self, pos: np.ndarray,
-                          expectation_map: np.ndarray, variance_map: np.ndarray,
-                          ambiguity_map: Optional[np.ndarray],
-                          depth: int, visited: np.ndarray, step: int,
-                          allowed_mask: Optional[np.ndarray] = None) -> Tuple[np.ndarray, float]:
+    def _recursive_search(
+        self,
+        pos: np.ndarray,
+        remaining_map: np.ndarray,
+        variance_map: np.ndarray,
+        ambiguity_map: Optional[np.ndarray],
+        depth: int,
+        visited: np.ndarray,
+        step: int,
+        allowed_mask: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, float]:
         actions = np.array([[-1, 0], [1, 0], [0, -1], [0, 1]])
         k1, k2, k3, k4, k5, k6, epsilon = 2, 2, 0.1, 0.1, 1, 1, 1e-3
+
         best_reward = -np.inf
         best_move = pos.copy()
 
@@ -663,22 +683,37 @@ class UGVController:
             if not is_allowed(nxt):
                 continue
 
-            new_visited = visited.copy()
-            new_visited[nxt[0], nxt[1]] = True
+            yi, xj = int(nxt[0]), int(nxt[1])
 
-            r = self._calculate_reward(
-                nxt, pos, expectation_map, variance_map, ambiguity_map,
+            # その枝での「まだ残っている価値」
+            harvest_reward = self._calculate_reward(
+                nxt, pos, remaining_map, variance_map, ambiguity_map,
                 k1, k2, k3, k4, k5, k6, epsilon,
                 self.reward_type, step
             )
-            if visited[nxt[0], nxt[1]]:
-                r = -100
 
-            total = r
+            # 再訪は軽いコストだけ
+            revisit_cost = self.revisit_penalty if visited[yi, xj] else 0.0
+
+            # この枝では nxt を収穫済みにする
+            new_remaining = remaining_map.copy()
+            new_remaining[yi, xj] = 0.0
+
+            new_visited = visited.copy()
+            new_visited[yi, xj] = True
+
+            total = harvest_reward - revisit_cost
+
             if depth > 1:
                 _, fut = self._recursive_search(
-                    nxt, expectation_map, variance_map, ambiguity_map,
-                    depth - 1, new_visited, step + 1, allowed_mask=allowed_mask
+                    nxt,
+                    new_remaining,
+                    variance_map,
+                    ambiguity_map,
+                    depth - 1,
+                    new_visited,
+                    step + 1,
+                    allowed_mask=allowed_mask
                 )
                 total += self.discount_factor * fut
 
@@ -688,32 +723,61 @@ class UGVController:
 
         return best_move, float(best_reward)
 
-    def calc(self, expectation_map: np.ndarray, variance_map: np.ndarray,
-             ambiguity_map: Optional[np.ndarray] = None,
-             depth: int = 10, step: int = 1, allowed_mask: Optional[np.ndarray] = None):
+    def calc(
+        self,
+        expectation_map: np.ndarray,
+        variance_map: np.ndarray,
+        ambiguity_map: Optional[np.ndarray] = None,
+        depth: int = 10,
+        step: int = 1,
+        allowed_mask: Optional[np.ndarray] = None
+    ):
+        remaining_map = expectation_map.copy()
         new_pos, _ = self._recursive_search(
-            self.position, expectation_map, variance_map, ambiguity_map,
-            depth, self.visited.copy(), step, allowed_mask=allowed_mask
+            self.position,
+            remaining_map,
+            variance_map,
+            ambiguity_map,
+            depth,
+            self.visited.copy(),
+            step,
+            allowed_mask=allowed_mask
         )
         if not np.array_equal(new_pos, self.position):
             self.position = new_pos
             self.visited[new_pos[0], new_pos[1]] = True
 
-    def get_planned_path(self, expectation_map: np.ndarray, variance_map: np.ndarray,
-                         ambiguity_map: Optional[np.ndarray] = None,
-                         depth: int = 10, allowed_mask: Optional[np.ndarray] = None) -> List[np.ndarray]:
+    def get_planned_path(
+        self,
+        expectation_map: np.ndarray,
+        variance_map: np.ndarray,
+        ambiguity_map: Optional[np.ndarray] = None,
+        depth: int = 10,
+        allowed_mask: Optional[np.ndarray] = None
+    ) -> List[np.ndarray]:
         path = []
         pos = self.position.copy()
         visited = self.visited.copy()
+        remaining_map = expectation_map.copy()
 
         for t in range(depth):
             nxt, _ = self._recursive_search(
-                pos, expectation_map, variance_map, ambiguity_map,
-                depth - t, visited, t + 1, allowed_mask=allowed_mask
+                pos,
+                remaining_map,
+                variance_map,
+                ambiguity_map,
+                depth - t,
+                visited,
+                t + 1,
+                allowed_mask=allowed_mask
             )
             path.append(nxt.copy())
-            visited[nxt[0], nxt[1]] = True
+
+            yi, xj = int(nxt[0]), int(nxt[1])
+            remaining_map[yi, xj] = 0.0
+            visited[yi, xj] = True
             pos = nxt
+
         return path
 
     def reachable_unvisited_mask(
@@ -1812,6 +1876,14 @@ def run_once(
     #gt = generate_ground_truth_map(grid_size)
     gt =generate_ground_truth_map_scalar(grid_size)
 
+    # --- dynamic harvest states ---
+    gt_initial = gt.copy()  # 評価・可視化用に元GTを保存したいなら残す
+    harvested_mask = np.zeros_like(gt, dtype=bool)
+    harvested_total = 0.0
+
+    # UGVごとに「前ステップでいた場所」を記録
+    prev_ugv_positions = [u.position.copy() for u in ugvs]
+
     ugvs = []
     for k in range(num_ugvs):
         ugv = UGVController(grid_size, reward_type=reward_type, discount_factor=discount_factor)
@@ -2127,7 +2199,10 @@ def run_once(
             ugv_log[f"ugv{k}_visited_prob_sum"].append(float(np.sum(fused_prob[m])) if cnt > 0 else 0.0)
 
         ugv_fleet.compute_voronoi(grid_size, grid_size)
-        ugv_E = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
+        ugv_E_raw = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
+        ugv_E = ugv_E_raw.copy()
+        ugv_E[harvested_mask] = 0.0
+
         ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth, ambiguity_map=fused_amb)
 
         V_eff = None
@@ -2172,13 +2247,32 @@ def run_once(
         else:
             ugv_fleet.compute_voronoi(grid_size, grid_size)
 
+        # --- dynamic harvest update ---
+        if (step % ugv_period) == 0:
+            for k, ugv in enumerate(ugvs):
+                yi, xj = int(ugv.position[0]), int(ugv.position[1])
+
+                # 「そのステップで新しく入ったセル」だけ収穫する
+                moved_to_new_cell = not np.array_equal(prev_ugv_positions[k], ugv.position)
+
+                if moved_to_new_cell and (not harvested_mask[yi, xj]):
+                    harvested_amount = float(gt[yi, xj])
+                    harvested_total += harvested_amount
+
+                    # 真の環境を更新
+                    gt[yi, xj] = 0.0
+                    harvested_mask[yi, xj] = True
+
+                # 次ステップ比較用に更新
+                prev_ugv_positions[k] = ugv.position.copy()
+
         J = float(np.sum(fused_var))
         J_history.append(J)
 
         total_crop = 0.0
         for u in ugvs:
             total_crop += float(np.sum(gt[u.visited]))
-        true_sum_history.append(total_crop)
+        true_sum_history.append(harvested_total)
 
         if visualize:
             im_mean.set_data(fused_mean)
@@ -2359,8 +2453,8 @@ def run_once(
     visited_union = np.zeros_like(gt, dtype=bool)
     for u in ugvs:
         visited_union |= u.visited
-    total_crop_union = float(np.sum(gt[visited_union]))
-    print(f"[RUN {run_idx}] UGVs visited crop sum (GT union): {total_crop_union:.3f}")
+    total_crop_union = float(harvested_total)
+    print(f"[RUN {run_idx}] UGVs harvested crop sum: {total_crop_union:.3f}")
 
     # ---- build run data dataframe (with run_idx column) ----
     df = pd.DataFrame({
