@@ -1881,9 +1881,6 @@ def run_once(
     harvested_mask = np.zeros_like(gt, dtype=bool)
     harvested_total = 0.0
 
-    # UGVごとに「前ステップでいた場所」を記録
-    prev_ugv_positions = [u.position.copy() for u in ugvs]
-
     ugvs = []
     for k in range(num_ugvs):
         ugv = UGVController(grid_size, reward_type=reward_type, discount_factor=discount_factor)
@@ -1891,6 +1888,9 @@ def run_once(
         ugv.position = p0.astype(int)
         ugv.visited[ugv.position[0], ugv.position[1]] = True
         ugvs.append(ugv)
+    
+    # UGVごとに「前ステップでいた場所」を記録
+    prev_ugv_positions = [u.position.copy() for u in ugvs]
 
     ugv_fleet = UGVFleet(ugvs)
 
