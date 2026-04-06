@@ -1977,52 +1977,28 @@ def run_once(
         plt.ion()
 
         gt_style = get_gt_plot_style(gt_initial)
-        mean_binary = (cfg.signal_mode == "gp_logistic_prob")
-        mean_vmin, mean_vmax = compute_display_limits(
-            np.zeros((grid_size, grid_size)),
-            binary=mean_binary
-        )
 
-        # 分散はそのままより標準偏差表示の方が直感的
+        mean_vmin, mean_vmax = compute_display_limits(gt_initial, binary=False)
+
         std0 = np.zeros((grid_size, grid_size), dtype=float)
         std_vmin, std_vmax = compute_display_limits(std0, binary=False)
 
-        fig, ax = plt.subplots(1, 3, figsize=(18, 5))
-        fig.subplots_adjust(left=0.08, right=0.98, bottom=0.16, wspace=0.30)
+        fig, ax = plt.subplots(1, 4, figsize=(24, 5))
+        fig.subplots_adjust(left=0.06, right=0.98, bottom=0.16, wspace=0.30)
 
-        # --- panel 0: mean/prob + paths ---
+        # --- panel 0: mean ---
         im_mean = ax[0].imshow(
             np.zeros((grid_size, grid_size)),
-            cmap="jet" if mean_binary else "viridis",
+            cmap="viridis",
             origin="lower",
-            vmin=0.0 if mean_binary else gt_style["vmin"],
-            vmax=1.0 if mean_binary else gt_style["vmax"],
+            vmin=mean_vmin,
+            vmax=mean_vmax,
             zorder=1,
         )
-
-        # GT の形だけ薄く重ねる
-        if gt_style["contour_levels"] is not None:
-            ax[0].contour(
-                gt_initial,
-                levels=gt_style["contour_levels"],
-                colors="white",
-                linewidths=2,
-                origin="lower",
-                zorder=12,
-            )
-        else:
-            gt_bg = ax[0].imshow(
-                gt_initial,
-                cmap="gray",
-                origin="lower",
-                alpha=0.18,
-                zorder=0,
-            )
-
         cb0 = fig.colorbar(im_mean, ax=ax[0], fraction=0.046, pad=0.04)
-        cb0.set_label("Estimated probability" if mean_binary else "Estimated mean")
+        cb0.set_label("Estimated mean")
 
-        # --- panel 1: std + paths ---
+        # --- panel 1: std ---
         im_std = ax[1].imshow(
             std0,
             cmap="magma",
@@ -2031,41 +2007,35 @@ def run_once(
             vmax=1.0,
             zorder=1,
         )
-        if gt_style["contour_levels"] is not None:
-            ax[1].contour(
-                gt_initial,
-                levels=gt_style["contour_levels"],
-                colors="white",
-                linewidths=2,
-                origin="lower",
-                zorder=12,
-            )
-        else:
-            ax[1].imshow(
-                gt_initial,
-                cmap="gray",
-                origin="lower",
-                alpha=0.18,
-                zorder=0,
-            )
-
         cb1 = fig.colorbar(im_std, ax=ax[1], fraction=0.046, pad=0.04)
         cb1.set_label("Estimated std")
 
-        # --- panel 2: GT ---
-        im_gt = ax[2].imshow(
+        # --- panel 2: prob ---
+        im_prob = ax[2].imshow(
+            np.zeros((grid_size, grid_size)),
+            cmap="jet",
+            origin="lower",
+            vmin=0.0,
+            vmax=1.0,
+            zorder=1,
+        )
+        cb2 = fig.colorbar(im_prob, ax=ax[2], fraction=0.046, pad=0.04)
+        cb2.set_label("Logistic probability")
+
+        # --- panel 3: GT ---
+        im_gt = ax[3].imshow(
             gt_initial,
             cmap=gt_style["cmap"],
             origin="lower",
             vmin=gt_style["vmin"],
             vmax=gt_style["vmax"],
         )
-        cb2 = fig.colorbar(im_gt, ax=ax[2], fraction=0.046, pad=0.04)
+        cb3 = fig.colorbar(im_gt, ax=ax[3], fraction=0.046, pad=0.04)
         if gt_style["colorbar_ticks"] is not None:
-            cb2.set_ticks(gt_style["colorbar_ticks"])
-        cb2.set_label(gt_style["title"])
+            cb3.set_ticks(gt_style["colorbar_ticks"])
+        cb3.set_label(gt_style["title"])
 
-        # UAV / UGV 描画は panel 0 に重ねる
+        # パス類は mean パネルに重ねる
         uav_dots = [ax[0].plot([], [], 'o', color=colors[i % len(colors)], label=f'UAV{i}', zorder=20 + i)[0]
                     for i in range(num_uavs)]
         uav_lines = [ax[0].plot([], [], '-', color=colors[i % len(colors)], markersize=3, zorder=10 + i)[0]
@@ -2107,15 +2077,15 @@ def run_once(
             a.set_ylim(0, grid_size - 1)
             a.set_aspect("equal")
 
-        ax[0].set_title(f"[RUN {run_idx}] Mean / Prob")
+        ax[0].set_title(f"[RUN {run_idx}] Mean")
         ax[1].set_title(f"[RUN {run_idx}] Std")
-        ax[2].set_title(f"[RUN {run_idx}] {gt_style['title']}")
+        ax[2].set_title(f"[RUN {run_idx}] Prob")
+        ax[3].set_title(f"[RUN {run_idx}] {gt_style['title']}")
 
         handles, labels = ax[0].get_legend_handles_labels()
         ax[0].legend(handles, labels, loc='upper right', frameon=True, fontsize=9)
-
     else:
-        fig = ax = im_mean = im_std = im_gt = None
+        fig = ax = im_mean = im_std = im_prob = im_gt = None
         cb0 = cb1 = cb2 = None
         uav_dots = uav_lines = ugv_lines = ugv_dots = waypoint_dots = chase_dots = []
         ugv_plan_lines = ugv_plan_targets = []
