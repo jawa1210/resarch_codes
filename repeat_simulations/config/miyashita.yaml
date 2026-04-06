@@ -47,10 +47,10 @@ cfg:
   suenaga_rho: 0.95
   suenaga_depth: 5
 
-  k_pp: 1.0
-  k_ugv: 1.0
-  v_limit: 5.0
-  control_period: 0.1
+cfg.k_pp: 1.0
+cfg.k_ugv: 1.0
+cfg.v_limit: 5.0
+cfg.control_period: 0.1
 
   cbf_j_alpha: 1.0
   cbf_j_gamma: 0.1
@@ -76,4 +76,4 @@ cfg:
   wp_min_dist: 2.0
   wp_power: 1.0
 
-  ugv_move_period: 10
+cfg.ugv_move_period: 5
