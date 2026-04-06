@@ -2153,6 +2153,8 @@ def run_once(
         master_seed: int,
         run_idx: int,
         show: bool = False,
+        signal_mode: str = "gp_mean",
+        fused_prob: Optional[np.ndarray] = None,
     ):
         os.makedirs(out_dir, exist_ok=True)
 
@@ -2164,28 +2166,53 @@ def run_once(
         was_interactive = plt.isinteractive()
         plt.ioff()
 
+        gt_style = get_gt_plot_style(gt)
+
+        if signal_mode == "gp_logistic_prob":
+            mean_map_to_show = fused_prob if fused_prob is not None else np.clip(
+                1.0 / (1.0 + np.exp(-fused_mean)), 0.0, 1.0
+            )
+            mean_vmin, mean_vmax = 0.0, 1.0
+            mean_cmap = "jet"
+        else:
+            mean_map_to_show = fused_mean
+            mean_vmin, mean_vmax = compute_display_limits(mean_map_to_show, binary=False)
+            mean_cmap = "viridis"
+
+        std_map_to_show = compute_std_map(fused_var)
+        std_vmin, std_vmax = compute_display_limits(std_map_to_show, binary=False)
+
         fig2, ax2 = plt.subplots(1, 3, figsize=(18, 5))
         for a in ax2:
             a.set_aspect("equal")
             a.set_xlim(0, fused_mean.shape[1] - 1)
             a.set_ylim(0, fused_mean.shape[0] - 1)
 
-        # =========================
-        # (1) mean + UGV paths
-        # =========================
+        # (1) Mean / Prob + UGV paths
         im0 = ax2[0].imshow(
-            normalize_01(fused_mean),
-            cmap="jet", origin="lower",
-            vmin=0, vmax=1
+            mean_map_to_show,
+            cmap=mean_cmap,
+            origin="lower",
+            vmin=mean_vmin,
+            vmax=mean_vmax
         )
-        ax2[0].contour(gt, levels=[0.5], colors="white", linewidths=2, origin="lower")
-        ax2[0].set_title(f"Mean + UGV paths (step={step})")
+        if gt_style["contour_levels"] is not None:
+            ax2[0].contour(
+                gt,
+                levels=gt_style["contour_levels"],
+                colors="white",
+                linewidths=2,
+                origin="lower"
+            )
+        else:
+            ax2[0].imshow(gt, cmap="gray", origin="lower", alpha=0.18)
+
+        ax2[0].set_title(f"Mean/Prob + UGV paths (step={step})")
         plt.colorbar(im0, ax=ax2[0], fraction=0.046, pad=0.04)
 
         for i, tr in enumerate(trajs_ugv):
             arr = np.asarray(tr, dtype=float)
             if arr.ndim == 2 and arr.shape[0] >= 2:
-                # path line
                 ax2[0].plot(
                     arr[:, 1], arr[:, 0],
                     "-", linewidth=3.0,
@@ -2193,7 +2220,6 @@ def run_once(
                     label=f"UGV{i}",
                     zorder=20,
                 )
-                # current position (丸)
                 y_cur, x_cur = float(arr[-1, 0]), float(arr[-1, 1])
                 ax2[0].plot(
                     x_cur, y_cur,
@@ -2203,7 +2229,6 @@ def run_once(
                     zorder=50,
                 )
 
-        # 凡例：枠の外（下）
         ax2[0].legend(
             loc="upper center",
             bbox_to_anchor=(0.5, -0.14),
@@ -2212,22 +2237,31 @@ def run_once(
             frameon=True,
         )
 
-        # =========================
-        # (2) var + UAV paths
-        # =========================
+        # (2) Std + UAV paths
         im1 = ax2[1].imshow(
-            normalize_01(fused_var),
-            cmap="jet", origin="lower",
-            vmin=0, vmax=1
+            std_map_to_show,
+            cmap="magma",
+            origin="lower",
+            vmin=std_vmin,
+            vmax=std_vmax
         )
-        ax2[1].contour(gt, levels=[0.5], colors="white", linewidths=2, origin="lower")
-        ax2[1].set_title(f"Var + UAV paths (step={step})")
+        if gt_style["contour_levels"] is not None:
+            ax2[1].contour(
+                gt,
+                levels=gt_style["contour_levels"],
+                colors="white",
+                linewidths=2,
+                origin="lower"
+            )
+        else:
+            ax2[1].imshow(gt, cmap="gray", origin="lower", alpha=0.18)
+
+        ax2[1].set_title(f"Std + UAV paths (step={step})")
         plt.colorbar(im1, ax=ax2[1], fraction=0.046, pad=0.04)
 
         for i, tr in enumerate(trajs_uav):
             arr = np.asarray(tr, dtype=float)
             if arr.ndim == 2 and arr.shape[0] >= 2:
-                # path line
                 ax2[1].plot(
                     arr[:, 1], arr[:, 0],
                     "-", linewidth=2.8,
@@ -2235,7 +2269,6 @@ def run_once(
                     label=f"UAV{i}",
                     zorder=20,
                 )
-                # current position (丸)
                 y_cur, x_cur = float(arr[-1, 0]), float(arr[-1, 1])
                 ax2[1].plot(
                     x_cur, y_cur,
@@ -2253,18 +2286,28 @@ def run_once(
             frameon=True,
         )
 
-       # (3) ground truth
-        im2 = ax2[2].imshow(gt, cmap="viridis", origin="lower")
-        ax2[2].set_title("Ground truth")
-        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
+        # (3) Ground truth
+        im2 = ax2[2].imshow(
+            gt,
+            cmap=gt_style["cmap"],
+            origin="lower",
+            vmin=gt_style["vmin"],
+            vmax=gt_style["vmax"]
+        )
+        ax2[2].set_title(gt_style["title"])
+        cb2 = plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
+        if gt_style["colorbar_ticks"] is not None:
+            cb2.set_ticks(gt_style["colorbar_ticks"])
 
-        # tight_layout は使わず、凡例スペースを確保
         fig2.subplots_adjust(bottom=0.23, wspace=0.35)
-
         fig2.savefig(save_path, dpi=200)
         print(f"[SAVE] snapshot -> {save_path}")
 
-        plt.close(fig2)   # ←必須
+        if show:
+            plt.show()
+        else:
+            plt.close(fig2)
+
         if was_interactive:
             plt.ion()
 
@@ -2477,6 +2520,7 @@ def run_once(
                     step=step,
                     fused_mean=fused_mean,
                     fused_var=fused_var,
+                    fused_prob=fused_prob,
                     gt=gt,
                     trajs_uav=trajs_uav,
                     trajs_ugv=trajs_ugv,
