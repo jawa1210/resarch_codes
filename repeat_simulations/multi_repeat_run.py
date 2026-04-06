@@ -155,8 +155,8 @@ class solver:
     def __init__(self):
         self.cbf_list: list[np.ndarray] = []     # each: [bJ, gx, gy]
         self.slack_list: list[float] = []        # each: slack coef
-        self.P_co: float = 1.0                   # weight for u part
-        self.P_slack: float = 1.0                # weight for slack vars
+        self.P_co: float = 1.0               # weight for u part
+        self.P_slack: float = 1.0       # weight for slack vars
 
     def add_cbf(self, bJ: float, dbJ_du_x: float, dbJ_du_y: float, slack: float = 0.0):
         self.cbf_list.append(np.array([bJ, dbJ_du_x, dbJ_du_y], dtype=float))
@@ -194,12 +194,10 @@ class solver:
         q[0:2] = -2.0 * self.P_co * nominal_input
 
         sol = solve_qp(P, q, G, h, solver="quadprog")
-        print("G_norm", np.linalg.norm(G), "h_norm", np.linalg.norm(h))
-        print(f"sol={sol}")
+        #self.slack = sol[2]
         if sol is None:
-            print("[QP] infeasible -> nominal")
-            return nominal_input.copy()
-
+            print("[QP] infeasible -> stop")
+            return np.zeros(2, dtype=float)
         return np.asarray(sol[:2], dtype=float)
 
 
@@ -224,6 +222,21 @@ class VelocityLimitation:
             n_y = float(np.sin(th))
             cbfs.append((self.max_velocity, -n_x, -n_y, 0.0))  # slackなし
         return cbfs
+    
+class FieldLimitation:
+    def __init__(self, grid_size: int, position: np.ndarray, slack: float = 0.0):
+        self.center = np.array([grid_size/2, grid_size/2], dtype=float)
+        self.radius = float(grid_size/2)
+        self.position = position
+        self.slack = float(slack)
+    
+    def calc_cbf(self):
+        L4_norm=np.sum(((self.center - self.position)/self.radius)**4)
+        cbf=1-L4_norm
+
+        grad=4*((self.center - self.position)**3)/(self.radius**4)
+
+        return [(cbf, -grad[0], -grad[1], self.slack)]
 
 
 
@@ -271,6 +284,7 @@ class SparseOnlineGP:
         denom = var_star + self.sigma0 ** 2
         q_t = (y - f_star) / denom
         r_t = -1.0 / denom
+        self.r_t=r_t
 
         h_t = k_tt - k_vec.dot(self.Q.dot(k_vec))
 
@@ -365,6 +379,7 @@ class SparseOnlineGP:
 
         z_raw = mu / np.sqrt(1.0 + (np.pi / 8.0) * var)
         z = float(1.0 / (1.0 + np.exp(-z_raw)))
+        self.var=var
         return mu, var, z, k_vec, self.C
     
     def _calc_now_C(self, position: np.ndarray):
@@ -402,6 +417,67 @@ class SparseOnlineGP:
         # Ctilde = U(C) + r s s^T
         C_next = C_ext + r_t * np.outer(s_t, s_t)
         return C_next
+    
+    def _calc_now_C_multi(self, points: np.ndarray) -> np.ndarray:
+        """
+        Virtually update C by appending multiple points as new basis vectors.
+        points: (M,2)
+        Returns Ctilde of size (N+M, N+M).
+
+        NOTE:
+        - これは「新規点を順に append した」ときの C の仮想更新（rank-1更新の繰り返し）。
+        - あなたの _calc_now_C(p) を多点に拡張したもの。
+        """
+        P = np.asarray(points, dtype=float)
+        if P.ndim == 1:
+            P = P.reshape(1, 2)
+        M = int(P.shape[0])
+        if M == 0:
+            # 追加点が無いなら現状の C を返す（サイズ N×N）
+            return np.asarray(self.C, dtype=float).copy()
+
+        # 現在の basis
+        Z = np.asarray(self.X, dtype=float)  # (N,2)
+        N = int(Z.shape[0])
+
+        # ベースが空のとき
+        if N == 0:
+            # 1点目から順に「空→append」を繰り返す
+            Ccur = np.zeros((0, 0), dtype=float)
+            Zcur = np.zeros((0, 2), dtype=float)
+        else:
+            Ccur = np.asarray(self.C, dtype=float).copy()
+            Zcur = Z.copy()
+
+        for m in range(M):
+            x_new = P[m]
+
+            Nc = int(Zcur.shape[0])
+            if Nc == 0:
+                k_tt = float(self.kernel(x_new, x_new))
+                denom = k_tt + self.sigma0**2
+                Ccur = np.array([[-1.0 / denom]], dtype=float)
+                Zcur = x_new.reshape(1, 2)
+                continue
+
+            # k_vec between existing (Zcur) and x_new
+            k_vec = np.array([float(self.kernel(Zcur[i], x_new)) for i in range(Nc)], dtype=float)  # (Nc,)
+            k_tt = float(self.kernel(x_new, x_new))
+
+            # predictive variance sigma^2(x_new) using current Ccur
+            sigma2 = float(k_tt + k_vec @ (Ccur @ k_vec))
+
+            denom = sigma2 + self.sigma0**2
+            r_t = -1.0 / denom
+
+            s_t = np.concatenate([Ccur @ k_vec, [1.0]])  # (Nc+1,)
+            C_ext = np.pad(Ccur, ((0, 1), (0, 1)), mode="constant")  # (Nc+1,Nc+1)
+            Ccur = C_ext + r_t * np.outer(s_t, s_t)
+
+            Zcur = np.vstack([Zcur, x_new.reshape(1, 2)])
+
+        return Ccur
+
 
 
 # ============================================================
@@ -418,24 +494,15 @@ def environment_function(pos: np.ndarray, true_map: np.ndarray,
     H, W = true_map.shape
     observations: List[Tuple[np.ndarray, float]] = []
 
-    # for di in (-2, 0, 2):
-    #     for dj in (-2, 0, 2):
-    #         i, j = i0 + di, j0 + dj
-    #         if not (0 <= i < H and 0 <= j < W):
-    #             continue
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            i, j = i0 + di, j0 + dj
+            if not (0 <= i < H and 0 <= j < W):
+                continue
 
-    #         imin, imax = max(0, i - 1), min(H, i + 2)
-    #         jmin, jmax = max(0, j - 1), min(W, j + 2)
-    #         local_patch = true_map[imin:imax, jmin:jmax]
-    #         val = float(np.mean(local_patch))
-    #         noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
-    #         observations.append((np.array([i, j], dtype=float), noisy))
-    
-    i, j = i0, j0
-    if 0 <= i < H and 0 <= j < W:
-        val = float(true_map[i, j])
-        noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
-        observations.append((np.array([i, j], dtype=float), noisy))
+            val = float(true_map[i, j])
+            noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
+            observations.append((np.array([i, j], dtype=float), noisy))
 
     return observations
 
@@ -456,6 +523,41 @@ def generate_ground_truth_map(grid_size=20):
     rect(0.20, 0.50, 0.60, 0.92, 1.0)
     rect(0.70, 0.85, 0.60, 0.80, 1.0)
     rect(0.10, 0.30, 0.10, 0.30, 1.0)
+
+    return gt
+
+def generate_ground_truth_map_scalar(
+    grid_size=20,
+    num_blobs=4,
+    amp_range=(1.0, 1.5),
+    sigma_range=(2.5, 4.5),
+    background=0.05,
+    noise_std=0.03,
+    max_value=10.0,
+    seed=None,
+):
+    rng = np.random.default_rng(seed)
+
+    H = W = grid_size
+    I, J = np.indices((H, W))
+    gt = np.full((H, W), background, dtype=float)
+
+    for _ in range(num_blobs):
+        cy = rng.uniform(0, H - 1)
+        cx = rng.uniform(0, W - 1)
+        amp = rng.uniform(*amp_range)
+        sig = rng.uniform(*sigma_range)
+
+        dist2 = (I - cy) ** 2 + (J - cx) ** 2
+        gt += amp * np.exp(-dist2 / (2.0 * sig ** 2))
+
+    gt += rng.normal(0.0, noise_std, size=(H, W))
+    gt = np.clip(gt, 0.0, None)
+
+    # 最大値を max_value に揃える
+    m = float(gt.max())
+    if m > 1e-12:
+        gt = gt / m * max_value
 
     return gt
 
@@ -851,6 +953,7 @@ UAVWaypointSignal = Literal["gp_var", "prob_ambiguity"]
 
 @dataclass
 class UAVConfig:
+    num_uavs:int=1
     use_cbf: bool = True
     waypoint_mode: WaypointMode = "common_weighted"
     nominal_mode: NominalMode = "to_waypoint"
@@ -874,7 +977,9 @@ class UAVConfig:
     k_pp: float = 2.0
     k_ugv: float = 2.0
     v_limit: float = 25.0
+    num_poly: int = 8
     control_period: float = 0.1
+    gp_update_period: float = 0.5
 
     cbf_j_alpha: float = 1.0
     cbf_j_gamma: float = 3.0
@@ -955,7 +1060,9 @@ class UAVController:
         self._V_eff_for_uav: Optional[np.ndarray] = None
         self._A_eff_for_uav: Optional[np.ndarray] = None
         self.J0: Optional[float] = None
-
+        self._I0: Optional[float] = None
+        self._I_prev: Optional[float] = None
+        self._sample_count: int = 0
 
     def set_voronoi_mask(self, mask: np.ndarray):
         self._voronoi_mask = mask
@@ -991,7 +1098,7 @@ class UAVController:
 
         return mean_map, var_map, prob_map
 
-    def calc_cbf_terms(self, u: np.ndarray, gamma: float, alpha: float) -> Tuple[np.ndarray, float]:
+    def calc_icbf_terms(self, u: np.ndarray, gamma: float, alpha: float) -> Tuple[np.ndarray, float]:
         r2 = self.rbf_sigma ** 2
         ns = len(self.gp.X)
         xi_J1 = np.zeros(2, dtype=float)
@@ -1018,7 +1125,8 @@ class UAVController:
                 grad_k_jp = (k_jp / r2) * (p - x_j)
                 grad_k_sum += float(z_l[j]) * grad_k_jp
 
-            xi_J1 += z_l_ns * (grad_k_lp + grad_k_sum)
+            # xi_J1 += z_l_ns * (grad_k_lp + grad_k_sum)
+            xi_J1 += 2*z_l_ns * (grad_k_lp - grad_k_sum)
 
             norm_u2 = float(np.dot(u, u))
             delta_lp = (x_l - p) / r2
@@ -1057,12 +1165,10 @@ class UAVController:
         xi_J2 += float(alpha * (np.dot(xi_J1, u) + gamma))
         return xi_J1, float(xi_J2)
 
-<<<<<<< HEAD
-=======
     def _rbf(self, a: np.ndarray, b: np.ndarray) -> float:
         # あなたの kernel 定義に合わせる（rbf_sigma は self.rbf_sigma）
-        r2 = float(self.rbf_sigma ** 2)
-        return float(np.exp(-np.linalg.norm(a - b) ** 2 / (2.0 * r2)))
+        self.r2 = float(self.rbf_sigma ** 2)
+        return float(np.exp(-np.linalg.norm(a - b) ** 2 / (2.0 * self.r2)))
 
     def calc_cbf_terms(
         self,
@@ -1071,110 +1177,122 @@ class UAVController:
         n_robots: int,
         ts_sampling: float,
         t_now: float,
-        I_i0: float,
         use_voronoi: bool = True,
+        virtual_points: Optional[np.ndarray] = None,  # ★追加: (M,2)
     ) -> tuple[np.ndarray, float, float]:
         """
         Returns:
             xi1 (2,), xi2 (scalar), I_tilde (scalar)
-        """
-        if sigma_eps is None:
-            # 論文の σε（観測ノイズ）に相当：あなたの gp.sigma0 を使うのが自然
-            sigma_eps = float(self.gp.sigma0)
 
-        # ----- Fd ∩ Vi(p) を作る（grid 全点のうち Voronoi 内だけ） -----
+        virtual_points:
+            - None のとき: 従来通り p=self.pos を 1点仮想追加
+            - 与えたとき: points(=観測点) を M点まとめて仮想追加して Ctilde を作る
+        """
+
+        # --- cells ---
         H = W = self.grid_size
         if use_voronoi and (self._voronoi_mask is not None) and self.cfg.use_voronoi:
             cells = np.argwhere(self._voronoi_mask.astype(bool))
         else:
             cells = np.argwhere(np.ones((H, W), dtype=bool))
 
-        # --- BV set Z[l] ---
+        # --- basis Z ---
         Z = np.asarray(self.gp.X, dtype=float)     # (N,2)
         N = int(Z.shape[0])
-        p = self.pos.astype(float).copy()         # (2,)
 
+        # --- virtual points P (M,2) ---
+        if virtual_points is None:
+            P = self.pos.astype(float).reshape(1, 2)   # 従来互換（中心1点）
+        else:
+            P = np.asarray(virtual_points, dtype=float)
+            if P.ndim == 1:
+                P = P.reshape(1, 2)
+            # 念のため bounds 内に収める（grid座標前提）
+            P[:, 0] = np.clip(P[:, 0], 0, H - 1)
+            P[:, 1] = np.clip(P[:, 1], 0, W - 1)
 
-        # --- build Ztilde and Ktilde ---
+        M = int(P.shape[0])
+
+        # --- build Ctilde for Ztilde=[Z; P] ---
         if N == 0:
-            # BVが空でも拡張集合は {p} なので 1x1
-            Ztilde = p.reshape(1, 2)
+            # basisが空のときも multi が処理してくれる
+            Ctilde = self.gp._calc_now_C_multi(P)   # (M,M)
         else:
-            Ztilde = np.vstack([Z, p.reshape(1, 2)])  # (N+1,2)
+            Ctilde = self.gp._calc_now_C_multi(P)   # (N+M, N+M)
 
-        M = Ztilde.shape[0]  # = N+1
-        K = np.zeros((M, M), dtype=float)
-        for i in range(M):
-            for j in range(M):
-                K[i, j] = float(self._rbf(Ztilde[i], Ztilde[j]))
+        L2 = float(self.rbf_sigma ** 2)
 
-        # --- Ctilde = -(K + sigma_eps^2 I)^-1 ---
-        Ctilde = self.gp._calc_now_C(p)
-        L2=self.r2
-
-        # --- precompute terms for the second sum in (12) ---
+        # --- precompute terms used in term_Z for each virtual point ---
         if N > 0:
-            p_minus_Z = p.reshape(1, 2) - Z                      # (N,2)
-            k_pZ = np.array([self._rbf(p, Z[j]) for j in range(N)], dtype=float)  # (N,)
+            # for each m: p_m - Z, and k(p_m, Z)
+            P_minus_Z = P[:, None, :] - Z[None, :, :]    # (M,N,2)
+            k_PZ = np.zeros((M, N), dtype=float)
+            for m in range(M):
+                for j in range(N):
+                    k_PZ[m, j] = float(self._rbf(P[m], Z[j]))
         else:
-            p_minus_Z = np.zeros((0, 2), dtype=float)
-            k_pZ = np.zeros((0,), dtype=float)
+            P_minus_Z = np.zeros((M, 0, 2), dtype=float)
+            k_PZ = np.zeros((M, 0), dtype=float)
 
         xi1 = np.zeros(2, dtype=float)
         I_tilde = 0.0
-        L2 = float(self.rbf_sigma ** 2)  # 論文の L^2 に相当（RBF length scale^2）:contentReference[oaicite:4]{index=4}
-
-        # p と Z の差分は何度も使うので先に
-        p_minus_Z = (p.reshape(1, 2) - Z)  # (N,2)
-        k_pZ = np.array([self._rbf(p, Z[j]) for j in range(N)], dtype=float)  # (N,)
 
         for (i, j) in cells:
-            xstar = np.array([float(i), float(j)], dtype=float)  # grid→worldなら変換してね
+            xstar = np.array([float(i), float(j)], dtype=float)
 
-            # k* of length (N+1)
+            # kstar = [k(Z,x*); k(P,x*)]  length (N+M)
             if N > 0:
-                k_Zx = np.array([self._rbf(Z[q], xstar) for q in range(N)], dtype=float)
+                k_Zx = np.array([float(self._rbf(Z[q], xstar)) for q in range(N)], dtype=float)  # (N,)
             else:
                 k_Zx = np.zeros((0,), dtype=float)
 
-            k_px = float(self._rbf(p, xstar))
-            kstar = np.concatenate([k_Zx, [k_px]])               # (N+1,)
+            k_Px = np.array([float(self._rbf(P[m], xstar)) for m in range(M)], dtype=float)      # (M,)
+            kstar = np.concatenate([k_Zx, k_Px])                                                 # (N+M,)
 
-            # z* = Ctilde k*
-            z = Ctilde @ kstar
-            z_last = float(z[-1])                                # [z*]_{N+1}
+            # z = Ctilde k*
+            z = Ctilde @ kstar  # (N+M,)
 
-            # 分散（tilde sigma^2）を足す：sigma^2 = k(x*,x*) + k*^T Ctilde k*  :contentReference[oaicite:5]{index=5}
-            sigma2 = 1.0 + float(kstar.T @ Ctilde @ kstar)
+            # tilde sigma^2(x*)
+            k_xx = float(self._rbf(xstar, xstar))
+            sigma2 = k_xx + float(kstar.T @ Ctilde @ kstar)
             I_tilde += sigma2
 
-            # xi1 accumulation (12)
-            term_x = (k_px / L2) * (p - xstar)                   # (2,)
+            # xi1: sum over virtual points
+            #   xi1 += Σ_m 2 z_{N+m} [ (k(p_m,x*)/L2)(p_m-x*) + Σ_j z_j k(p_m,Z_j)(p_m-Z_j)/L2 ]
+            if M > 0:
+                zj = z[:N] if N > 0 else np.zeros((0,), dtype=float)
 
-            if N > 0:
-                zj = z[:-1]                                      # (N,)
-                term_Z = ((zj * k_pZ)[:, None] * (p_minus_Z / L2)).sum(axis=0)  # (2,)
-            else:
-                term_Z = np.zeros(2, dtype=float)
+                for m in range(M):
+                    z_m = float(z[N + m])  # virtual point m's coefficient
+                    k_pmx = float(k_Px[m])
+
+                    term_x = (k_pmx / L2) * (P[m] - xstar)  # (2,)
+
+                    if N > 0:
+                        # term_Z = Σ_j (zj[j] * k(p_m,Z_j)) * (p_m - Z_j)/L2
+                        w = (zj * k_PZ[m, :])[:, None]  # (N,1)
+                        term_Z = (w * (P_minus_Z[m] / L2)).sum(axis=0)  # (2,)
+                    else:
+                        term_Z = np.zeros(2, dtype=float)
 
                     xi1 += 2.0 * z_m * (term_x + term_Z)
 
         # --- set I0 only once (fixed reference) ---
         if self._I0 is None:
             self._I0 = float(I_tilde)
-            self._I_prev = float(I_tilde)   # optional: for logging
+            self._I_prev = float(I_tilde)
         I_i0 = float(self._I0)
 
-        # xi2 (13)
+        # xi2 (あなたの式のまま)
         xi2 = float(
             -gamma/(n_robots*ts_sampling)
-            - alpha_J*(I_tilde + gamma*t_now/(n_robots*ts_sampling) - I_i0)
+            - alpha_J*(I_tilde + (gamma*t_now)/(n_robots*ts_sampling) - I_i0)
         )
+
         return xi1, xi2, float(I_tilde)
 
 
 
->>>>>>> 7ee82bb (add)
     def _ring_weight_map(self, H: int, W: int, center_ij: np.ndarray) -> np.ndarray:
         cfg = self.cfg
         I, J = np.indices((H, W))
@@ -1499,19 +1617,20 @@ class UAVController:
         do_update = (step is None) or ((step % steps_per_gp) == 0)
 
         if do_update:
-            # 1) GPを更新
-            self.update_map(env_fn)
+            obs_list = env_fn(self.pos)  # 3×3（中心あり）の観測点9つ
+            self._last_obs_points = np.vstack([p for p, _ in obs_list]) if len(obs_list) > 0 else None
+
+            # GP更新（obs_list を使い回す）
+            for p_i, y_i in obs_list:
+                self.gp.update(np.asarray(p_i, dtype=float), float(y_i))
+
             self._sample_count += 1
-
-            # 2) ★即座に map を再計算してキャッシュ更新（ズレ解消）
             self._cached_mean_map, self._cached_var_map, self._cached_prob_map = self.get_map_estimates()
-
-            # 3) publish counterもリセット（次の定期更新までのカウントを綺麗にする）
             self._publish_counter = 0.0
         else:
-            # GP更新が無いステップだけ、従来通り publish周期で更新
             self.update_maps_for_ugv()
 
+       # (1) まずマップはここまでのあなたの処理のまま取得済みとする
         _, V_map, P_map = self.get_maps_for_ugv()
 
         if cfg.uav_waypoint_signal == "prob_ambiguity":
@@ -1520,76 +1639,97 @@ class UAVController:
         else:
             V_for_wp = V_map
 
-        waypoint = self._choose_waypoint(V_for_wp)
-        self.current_waypoint = waypoint
+        # (2) 先に J-CBF の enable 判定だけ作る（waypointはまだ作らない）
+        enable_J_cbf = True
+        if cfg.use_cbf and (not use_icbf):
+            if fused_var is None or step is None:
+                raise ValueError("fused_var and step are required for J-based CBF")
 
-        v_nom = self._compute_nominal(waypoint, fused_amb=fused_amb)
-        if use_icbf:
-            nu_nom = (v_nom - self.v) / cfg.control_period
-        else:
-            nu_nom = np.zeros(2, dtype=float)
-
-        if not cfg.use_cbf:
-            self.v = v_nom
-        else:
-            if use_icbf:
-                xi_J1, xi_J2 = self.calc_icbf_terms(self.v, gamma=cfg.cbf_j_gamma, alpha=cfg.cbf_j_alpha)
-            else:
-                if fused_var is None or step is None:
-                    raise ValueError("fused_var and step are required for J-based CBF")
-                # ---- (A) I_i0 を初回だけ決める（論文の I_{i0}）----
-                if self._I0 is None:
-                    _, _, I0 = self.calc_cbf_terms(
-                        alpha_J=cfg.cbf_j_alpha,
-                        gamma=cfg.cbf_j_gamma,
-                        n_robots=int(cfg.num_uavs),
-                        ts_sampling=float(cfg.gp_update_period),
-                        t_now=0.0,
-                        use_voronoi=cfg.use_voronoi,
-                    )
-                    self._I0 = float(I0)
-                    self._I_prev = float(I0)
-
-                t_now = float(step * cfg.control_period)
-                xi_J1, xi_J2 ,I_tilde= self.calc_cbf_terms(
+            if self._I0 is None:
+                _, _, I0 = self.calc_cbf_terms(
                     alpha_J=cfg.cbf_j_alpha,
                     gamma=cfg.cbf_j_gamma,
                     n_robots=int(cfg.num_uavs),
                     ts_sampling=float(cfg.gp_update_period),
-                    t_now=t_now,
+                    t_now=0.0,
                     use_voronoi=cfg.use_voronoi,
+                    virtual_points=self._last_obs_points,
                 )
-                print("分散変化量=", I_tilde - self._I_prev, "I_0=", self._I0, "I_tilde=", I_tilde)
-                self._I_prev=I_tilde
-            cbf_J = [float(xi_J2), float(xi_J1[0]), float(xi_J1[1]), -0.1]
-            print("I_i0=", self._I0)
-            print("I_tilde=", I_tilde)
+                self._I0 = float(I0)
+                self._I_prev = float(I0)
 
-            velocity_limitation = VelocityLimitation(cfg.v_limit, cfg.num_poly, slack=0.0)
-            speed_cbfs = velocity_limitation.calc_cbf()
+            t_now = float(step * cfg.control_period)
+            xi_J1, xi_J2, I_tilde = self.calc_cbf_terms(
+                alpha_J=cfg.cbf_j_alpha,
+                gamma=cfg.cbf_j_gamma,
+                n_robots=int(cfg.num_uavs),
+                ts_sampling=float(cfg.gp_update_period),
+                t_now=t_now,
+                use_voronoi=cfg.use_voronoi,
+                virtual_points=self._last_obs_points,
+            )
 
-            qp = solver()
-            qp.add_cbfs([tuple(cbf_J), *speed_cbfs])
-            #qp.add_cbfs([tuple(cbf_J)])
-            if use_icbf:
-                nu = qp.solve(nu_nom)
-                self.v = self.v + nu * cfg.control_period
-            else:
-                u_star=qp.solve(v_nom)
-                self.v = u_star
-                # --- after solving QP ---
-                u = self.v.copy()  # 今回は self.v = u_star にしてるので
+            print("分散変化量=", I_tilde - self._I_prev, "I_0=", self._I0, "I_tilde=", I_tilde)
+            self._I_prev = I_tilde
 
-                lhs = float(xi_J1 @ u + xi_J2)   # >= 0 なら制約OK
-                print("feasible@u=0?", (lhs >= 0.0))
-                #print("r_t",self.gp.r_t)
-                #print(f"[CBF CHECK] step={step} w = {qp.slack:+.6e}")
-                print("velocity=", self.v)
+            vlim = float(cfg.v_limit)
+            if (xi_J2 + float(np.linalg.norm(xi_J1)) * vlim) < 0.0:
+                print(f"[UAV{self.uav_id}] J-CBF skip: necessary condition fails "
+                    f"(xi2 + ||xi1|| vlim < 0). "
+                    f"||xi1||={np.linalg.norm(xi_J1):.3e} xi2={xi_J2:.3e} vlim={vlim:.3f} "
+                    f"I_tilde={I_tilde:.3f} I0={self._I0:.3f}")
+                enable_J_cbf = False
+
+        # (3) waypoint を作る
+        if enable_J_cbf:
+            waypoint = self._choose_waypoint(V_for_wp)
+        else:
+            # ★このステップだけ waypoint_mode を miyashita 扱いで生成
+            _orig = cfg.waypoint_mode
+            try:
+                cfg.waypoint_mode = "miyashita"
+                waypoint = self._choose_waypoint(V_for_wp)
+                print("========================宮下モード=============================")
+            finally:
+                cfg.waypoint_mode = _orig
+
+        self.current_waypoint = waypoint
+
+        # (4) nominal をその waypoint から計算
+        v_nom = self._compute_nominal(waypoint, fused_amb=fused_amb)
+
+
+        cbf_J = [float(xi_J2), float(xi_J1[0]), float(xi_J1[1]), 0.1]
+
+        velocity_limitation = VelocityLimitation(cfg.v_limit, cfg.num_poly, slack=0.0)
+        speed_cbfs = velocity_limitation.calc_cbf()
+
+        field_limitatiom=FieldLimitation(self.grid_size, self.pos, slack=0.0)
+        field_cbfs=field_limitatiom.calc_cbf()
+
+        qp = solver()
+        if enable_J_cbf:
+            qp.add_cbfs([tuple(cbf_J), *speed_cbfs, *field_cbfs])
+        else:
+            qp.add_cbfs([*speed_cbfs,*field_cbfs])
+        #qp.add_cbfs([tuple(cbf_J)])
+        if use_icbf:
+            nu = qp.solve(nu_nom)
+            self.v = self.v + nu * cfg.control_period
+        else:
+            u_star=qp.solve(v_nom)
+            self.v = u_star
+            u = self.v.copy()  # 今回は self.v = u_star にしてるので
+
+            lhs = float(xi_J1 @ u + xi_J2)   # >= 0 なら制約OK
+            print("feasible@u=0?", (lhs >= 0.0))
+            print("Xi_J1=", xi_J1, " Xi_J2=", xi_J2)
+            print("velocity=", self.v)
 
 
         spd = float(np.linalg.norm(self.v))
-        if spd > cfg.v_limit:
-            self.v = (cfg.v_limit / max(spd, 1e-12)) * self.v
+        # if spd > cfg.v_limit:
+        #     self.v = (cfg.v_limit / max(spd, 1e-12)) * self.v
 
         self.pos = self.pos + self.v * cfg.control_period
         H = W = self.grid_size
@@ -1660,6 +1800,7 @@ def run_once(
     gp_max_basis = int(deep_get(params, "gp_max_basis", 150))
     gp_threshold_delta = float(deep_get(params, "gp_threshold_delta", 0.05))
     rbf_sigma = float(deep_get(params, "rbf_sigma", 2.0))
+    cfg.num_uavs = num_uavs
 
     # reproducible RNG per run
     rng = make_rng(master_seed, scenario_id, run_idx, grid_size, num_uavs, num_ugvs)
@@ -1668,7 +1809,8 @@ def run_once(
 
     print(f"[RUN {run_idx}] init_uav={uav_init.tolist()} init_ugv={ugv_init.tolist()}")
 
-    gt = generate_ground_truth_map(grid_size)
+    #gt = generate_ground_truth_map(grid_size)
+    gt =generate_ground_truth_map_scalar(grid_size)
 
     ugvs = []
     for k in range(num_ugvs):
@@ -1715,7 +1857,7 @@ def run_once(
         fig, ax = plt.subplots(1, 2, figsize=(12.5, 5))
         fig.subplots_adjust(left=0.22)
 
-        ax[0].contour(gt, levels=[0.5], colors='white', linewidths=2, origin='lower', zorder=12)
+        ax[0].imshow(gt, cmap="viridis", origin="lower")
 
         im_mean = ax[0].imshow(np.zeros((grid_size, grid_size)), vmin=0, vmax=1, cmap='jet', origin='lower')
         im_var = ax[1].imshow(np.zeros((grid_size, grid_size)), vmin=0, vmax=1, cmap='jet', origin='lower')
@@ -1909,7 +2051,7 @@ def run_once(
         # =========================
         # (3) ground truth (blue/red)
         # =========================
-        im2 = ax2[2].imshow(gt, cmap=GT_CMAP, origin="lower", vmin=0, vmax=1)
+        im2 = ax2[2].imshow(final_gt, cmap="viridis", origin="lower")
         ax2[2].set_title("Ground truth (blue=0, red=1)")
         plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04, ticks=[0, 1])
 
@@ -2270,6 +2412,7 @@ def run_once(
         'cfg.k_pp': cfg.k_pp,
         'cfg.k_ugv': cfg.k_ugv,
         'cfg.v_limit': cfg.v_limit,
+        'cfg.num_poly': cfg.num_poly,
         'cfg.control_period': cfg.control_period,
         'cfg.cbf_j_alpha': cfg.cbf_j_alpha,
         'cfg.cbf_j_gamma': cfg.cbf_j_gamma,
@@ -2324,7 +2467,9 @@ def build_cfg_from_params(params: dict) -> UAVConfig:
         k_pp=float(deep_get(params, "cfg.k_pp", 2.0)),
         k_ugv=float(deep_get(params, "cfg.k_ugv", 2.0)),
         v_limit=float(deep_get(params, "cfg.v_limit", 5.0)),
+        num_poly=int(deep_get(params, "cfg.num_poly", 8)),
         control_period=float(deep_get(params, "cfg.control_period", 0.1)),
+        gp_update_period=float(deep_get(params, "cfg.gp_update_period", 0.5)),
 
         cbf_j_alpha=float(deep_get(params, "cfg.cbf_j_alpha", 1.0)),
         cbf_j_gamma=float(deep_get(params, "cfg.cbf_j_gamma", 3.0)),
