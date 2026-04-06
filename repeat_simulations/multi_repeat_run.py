@@ -2096,6 +2096,7 @@ def run_once(
     J_history = []
     true_sum_history = []
     ugv_log = {"step": []}
+    fixed_std_range_initialized = False
 
     def _ensure_ugv_cols(k: int):
         base_cols = [
@@ -2317,6 +2318,15 @@ def run_once(
         fused_var = np.mean(np.stack(var_maps, axis=0), axis=0)
         fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
         fused_amb = fused_prob * (1.0 - fused_prob)
+        if visualize and (not fixed_std_range_initialized):
+            std_init = compute_std_map(fused_var)
+            std_vmin = 0.0
+            std_vmax = float(np.percentile(std_init, 99.0))
+            if std_vmax < 1e-12:
+                std_vmax = 1.0
+
+            mean_vmin, mean_vmax = compute_display_limits(gt_initial, binary=False)
+            fixed_std_range_initialized = True
 
         # UGV visited logging
         ugv_log["step"].append(step)
@@ -2419,19 +2429,18 @@ def run_once(
         true_sum_history.append(harvested_total)
 
         if visualize:
-            mean_map_to_show = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
+            mean_map_to_show = fused_mean
             std_map_to_show = compute_std_map(fused_var)
+            prob_map_to_show = fused_prob
 
-            # mean/prob の表示範囲更新
-            if cfg.signal_mode == "gp_logistic_prob":
-                im_mean.set_clim(0.0, 1.0)
-            else:
-                mvmin, mvmax = compute_display_limits(mean_map_to_show, binary=False)
-                im_mean.set_clim(mvmin, mvmax)
+            # mean は GT スケールに合わせる
+            im_mean.set_clim(mean_vmin, mean_vmax)
 
-            # std の表示範囲更新
-            svmin, svmax = compute_display_limits(std_map_to_show, binary=False)
-            im_std.set_clim(svmin, svmax)
+            # std は固定スケールにする
+            im_std.set_clim(std_vmin, std_vmax)
+
+            # prob は常に 0-1
+            im_prob.set_clim(0.0, 1.0)
 
             # GT は動的収穫後の形をそのまま表示
             gt_style_now = get_gt_plot_style(gt)
@@ -2441,6 +2450,7 @@ def run_once(
 
             im_mean.set_data(mean_map_to_show)
             im_std.set_data(std_map_to_show)
+            im_prob.set_data(prob_map_to_show)
 
             for i, uav in enumerate(uavs):
                 trajs_uav[i].append(uav.pos.copy())
@@ -2473,9 +2483,10 @@ def run_once(
                     ugv_plan_lines[i].set_data([], [])
                     ugv_plan_targets[i].set_data([], [])
 
-            ax[0].set_title(f"[RUN {run_idx}] Step {step} Mean/Prob")
+            ax[0].set_title(f"[RUN {run_idx}] Step {step} Mean")
             ax[1].set_title(f"[RUN {run_idx}] Step {step} Std")
-            ax[2].set_title(f"[RUN {run_idx}] {gt_style_now['title']}")
+            ax[2].set_title(f"[RUN {run_idx}] Step {step} Prob")
+            ax[3].set_title(f"[RUN {run_idx}] {gt_style_now['title']}")
 
             fig.canvas.draw()
             plt.pause(0.01)
