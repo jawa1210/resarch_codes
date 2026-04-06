@@ -54,6 +54,55 @@ def normalize_01(arr: np.ndarray, eps: float = 1e-12) -> np.ndarray:
         return np.zeros_like(arr)
     return (arr - a_min) / (a_max - a_min)
 
+def is_binary_map(arr: np.ndarray, tol: float = 1e-8) -> bool:
+    vals = np.unique(np.asarray(arr))
+    if vals.size == 0:
+        return False
+    return np.all(np.isclose(vals, 0.0, atol=tol) | np.isclose(vals, 1.0, atol=tol))
+
+
+def compute_display_limits(arr: np.ndarray, binary: bool, q_low: float = 1.0, q_high: float = 99.0):
+    a = np.asarray(arr, dtype=float)
+    finite = a[np.isfinite(a)]
+    if finite.size == 0:
+        return 0.0, 1.0
+
+    if binary:
+        return -0.5, 1.5
+
+    vmin = float(np.percentile(finite, q_low))
+    vmax = float(np.percentile(finite, q_high))
+
+    if abs(vmax - vmin) < 1e-12:
+        vmax = vmin + 1.0
+    return vmin, vmax
+
+
+def compute_std_map(var_map: np.ndarray) -> np.ndarray:
+    return np.sqrt(np.maximum(np.asarray(var_map, dtype=float), 0.0))
+
+
+def get_gt_plot_style(gt: np.ndarray):
+    if is_binary_map(gt):
+        return {
+            "cmap": GT_CMAP,
+            "vmin": -0.5,
+            "vmax": 1.5,
+            "title": "Ground truth (binary)",
+            "contour_levels": [0.5],
+            "colorbar_ticks": [0, 1],
+        }
+    else:
+        vmin, vmax = compute_display_limits(gt, binary=False)
+        return {
+            "cmap": "viridis",
+            "vmin": vmin,
+            "vmax": vmax,
+            "title": "Ground truth",
+            "contour_levels": None,
+            "colorbar_ticks": None,
+        }
+
 
 
 # ============================================================
@@ -1926,64 +1975,148 @@ def run_once(
 
     if visualize:
         plt.ion()
-        fig, ax = plt.subplots(1, 2, figsize=(12.5, 5))
-        fig.subplots_adjust(left=0.22)
 
-        ax[0].imshow(gt, cmap="viridis", origin="lower")
+        gt_style = get_gt_plot_style(gt_initial)
+        mean_binary = (cfg.signal_mode == "gp_logistic_prob")
+        mean_vmin, mean_vmax = compute_display_limits(
+            np.zeros((grid_size, grid_size)),
+            binary=mean_binary
+        )
 
-        im_mean = ax[0].imshow(np.zeros((grid_size, grid_size)), vmin=0, vmax=1, cmap='jet', origin='lower')
-        im_var = ax[1].imshow(np.zeros((grid_size, grid_size)), vmin=0, vmax=1, cmap='jet', origin='lower')
+        # 分散はそのままより標準偏差表示の方が直感的
+        std0 = np.zeros((grid_size, grid_size), dtype=float)
+        std_vmin, std_vmax = compute_display_limits(std0, binary=False)
+
+        fig, ax = plt.subplots(1, 3, figsize=(18, 5))
+        fig.subplots_adjust(left=0.08, right=0.98, bottom=0.16, wspace=0.30)
+
+        # --- panel 0: mean/prob + paths ---
+        im_mean = ax[0].imshow(
+            np.zeros((grid_size, grid_size)),
+            cmap="jet" if mean_binary else "viridis",
+            origin="lower",
+            vmin=0.0 if mean_binary else gt_style["vmin"],
+            vmax=1.0 if mean_binary else gt_style["vmax"],
+            zorder=1,
+        )
+
+        # GT の形だけ薄く重ねる
+        if gt_style["contour_levels"] is not None:
+            ax[0].contour(
+                gt_initial,
+                levels=gt_style["contour_levels"],
+                colors="white",
+                linewidths=2,
+                origin="lower",
+                zorder=12,
+            )
+        else:
+            gt_bg = ax[0].imshow(
+                gt_initial,
+                cmap="gray",
+                origin="lower",
+                alpha=0.18,
+                zorder=0,
+            )
 
         cb0 = fig.colorbar(im_mean, ax=ax[0], fraction=0.046, pad=0.04)
-        cb0.set_label('Estimated mean/prob (fused)')
-        cb1 = fig.colorbar(im_var, ax=ax[1], fraction=0.046, pad=0.04)
-        cb1.set_label('Estimated variance (fused)')
+        cb0.set_label("Estimated probability" if mean_binary else "Estimated mean")
 
-        uav_dots = [ax[0].plot([], [], 'o', color=colors[i % len(colors)], label=f'UAV{i}', zorder=12 + i)[0]
+        # --- panel 1: std + paths ---
+        im_std = ax[1].imshow(
+            std0,
+            cmap="magma",
+            origin="lower",
+            vmin=0.0,
+            vmax=1.0,
+            zorder=1,
+        )
+        if gt_style["contour_levels"] is not None:
+            ax[1].contour(
+                gt_initial,
+                levels=gt_style["contour_levels"],
+                colors="white",
+                linewidths=2,
+                origin="lower",
+                zorder=12,
+            )
+        else:
+            ax[1].imshow(
+                gt_initial,
+                cmap="gray",
+                origin="lower",
+                alpha=0.18,
+                zorder=0,
+            )
+
+        cb1 = fig.colorbar(im_std, ax=ax[1], fraction=0.046, pad=0.04)
+        cb1.set_label("Estimated std")
+
+        # --- panel 2: GT ---
+        im_gt = ax[2].imshow(
+            gt_initial,
+            cmap=gt_style["cmap"],
+            origin="lower",
+            vmin=gt_style["vmin"],
+            vmax=gt_style["vmax"],
+        )
+        cb2 = fig.colorbar(im_gt, ax=ax[2], fraction=0.046, pad=0.04)
+        if gt_style["colorbar_ticks"] is not None:
+            cb2.set_ticks(gt_style["colorbar_ticks"])
+        cb2.set_label(gt_style["title"])
+
+        # UAV / UGV 描画は panel 0 に重ねる
+        uav_dots = [ax[0].plot([], [], 'o', color=colors[i % len(colors)], label=f'UAV{i}', zorder=20 + i)[0]
                     for i in range(num_uavs)]
-        uav_lines = [ax[0].plot([], [], '-', color=colors[i % len(colors)], markersize=3, zorder=6 + i)[0]
-                     for i in range(num_uavs)]
+        uav_lines = [ax[0].plot([], [], '-', color=colors[i % len(colors)], markersize=3, zorder=10 + i)[0]
+                    for i in range(num_uavs)]
 
         ugv_lines = [ax[0].plot([], [], '-x', color=ugv_colors[i % len(ugv_colors)], markersize=3,
-                                label=f'UGV{i} Path', zorder=20 + i)[0]
-                     for i in range(num_ugvs)]
-        ugv_dots = [ax[0].plot([], [], 'wo', markeredgecolor='k', label=f'UGV{i}', zorder=21 + i)[0]
+                                label=f'UGV{i} Path', zorder=30 + i)[0]
+                    for i in range(num_ugvs)]
+        ugv_dots = [ax[0].plot([], [], 'wo', markeredgecolor='k', label=f'UGV{i}', zorder=31 + i)[0]
                     for i in range(num_ugvs)]
 
         waypoint_dots = [ax[0].plot([], [], 's', color=colors[i % len(colors)], markersize=6,
-                                    label=f'UAV{i} WP', zorder=30 + i)[0]
-                         for i in range(num_uavs)]
+                                    label=f'UAV{i} WP', zorder=40 + i)[0]
+                        for i in range(num_uavs)]
         chase_dots = [ax[0].plot([], [], 'X', color=colors[i % len(colors)], markersize=8,
-                                 label=f'UAV{i} chase', zorder=35 + i)[0]
-                      for i in range(num_uavs)]
+                                label=f'UAV{i} chase', zorder=45 + i)[0]
+                    for i in range(num_uavs)]
 
         ugv_plan_lines = []
         ugv_plan_targets = []
         for i in range(num_ugvs):
-            line, = ax[0].plot([], [], '--', alpha=1.0, linewidth=2.5, label=f'UGV{i} planned', zorder=25 + i)
+            line, = ax[0].plot([], [], '--', alpha=1.0, linewidth=2.5, label=f'UGV{i} planned', zorder=35 + i)
             line.set_color('#FFFF00')
             line.set_path_effects([pe.Stroke(linewidth=4.0, foreground='black'), pe.Normal()])
             ugv_plan_lines.append(line)
 
             tgt, = ax[0].plot([], [], 'o', mfc='#FFFF00', mec='black', markersize=9,
-                              label=f'UGV{i} target', zorder=26 + i)
+                            label=f'UGV{i} target', zorder=36 + i)
             ugv_plan_targets.append(tgt)
 
         empty_mask = np.zeros((grid_size, grid_size), dtype=bool)
         vor_layers = [ax[0].imshow(mask_to_rgba(empty_mask, colors[i % len(colors)], alpha=0.18),
-                                   origin='lower', zorder=9)
-                      for i in range(num_uavs)]
+                                origin='lower', zorder=9)
+                    for i in range(num_uavs)]
         vor_cnt_lines = [None for _ in range(num_uavs)]
 
-        ax[0].set_xlim(0, grid_size - 1)
-        ax[0].set_ylim(0, grid_size - 1)
-        ax[0].autoscale(False)
+        for a in ax:
+            a.set_xlim(0, grid_size - 1)
+            a.set_ylim(0, grid_size - 1)
+            a.set_aspect("equal")
+
+        ax[0].set_title(f"[RUN {run_idx}] Mean / Prob")
+        ax[1].set_title(f"[RUN {run_idx}] Std")
+        ax[2].set_title(f"[RUN {run_idx}] {gt_style['title']}")
 
         handles, labels = ax[0].get_legend_handles_labels()
-        ax[0].legend(handles, labels, loc='upper right', bbox_to_anchor=(-0.02, 1.0),
-                     borderaxespad=0.0, frameon=True, fontsize=9)
+        ax[0].legend(handles, labels, loc='upper right', frameon=True, fontsize=9)
+
     else:
-        fig = ax = im_mean = im_var = None
+        fig = ax = im_mean = im_std = im_gt = None
+        cb0 = cb1 = cb2 = None
         uav_dots = uav_lines = ugv_lines = ugv_dots = waypoint_dots = chase_dots = []
         ugv_plan_lines = ugv_plan_targets = []
         vor_layers = []
@@ -2273,8 +2406,28 @@ def run_once(
         true_sum_history.append(harvested_total)
 
         if visualize:
-            im_mean.set_data(fused_mean)
-            im_var.set_data(fused_var)
+            mean_map_to_show = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
+            std_map_to_show = compute_std_map(fused_var)
+
+            # mean/prob の表示範囲更新
+            if cfg.signal_mode == "gp_logistic_prob":
+                im_mean.set_clim(0.0, 1.0)
+            else:
+                mvmin, mvmax = compute_display_limits(mean_map_to_show, binary=False)
+                im_mean.set_clim(mvmin, mvmax)
+
+            # std の表示範囲更新
+            svmin, svmax = compute_display_limits(std_map_to_show, binary=False)
+            im_std.set_clim(svmin, svmax)
+
+            # GT は動的収穫後の形をそのまま表示
+            gt_style_now = get_gt_plot_style(gt)
+            im_gt.set_data(gt)
+            im_gt.set_cmap(gt_style_now["cmap"])
+            im_gt.set_clim(gt_style_now["vmin"], gt_style_now["vmax"])
+
+            im_mean.set_data(mean_map_to_show)
+            im_std.set_data(std_map_to_show)
 
             for i, uav in enumerate(uavs):
                 trajs_uav[i].append(uav.pos.copy())
@@ -2307,8 +2460,10 @@ def run_once(
                     ugv_plan_lines[i].set_data([], [])
                     ugv_plan_targets[i].set_data([], [])
 
-            ax[0].set_title(f"[RUN {run_idx}] Step {step} Mean (fused)")
-            ax[1].set_title(f"[RUN {run_idx}] Step {step} Var (fused)")
+            ax[0].set_title(f"[RUN {run_idx}] Step {step} Mean/Prob")
+            ax[1].set_title(f"[RUN {run_idx}] Step {step} Std")
+            ax[2].set_title(f"[RUN {run_idx}] {gt_style_now['title']}")
+
             fig.canvas.draw()
             plt.pause(0.01)
 
@@ -2332,6 +2487,7 @@ def run_once(
                     master_seed=master_seed,
                     run_idx=run_idx,
                     show=False,
+                    signal_mode=cfg.signal_mode,
                 )
 
 
@@ -2352,7 +2508,20 @@ def run_once(
         was_interactive = plt.isinteractive()
         plt.ioff()
 
-        out_dir_vis = os.path.join(run_root, "final")   # ここも散らからないように分ける
+        gt_style = get_gt_plot_style(final_gt)
+        final_mean_map = final_mean if (cfg.signal_mode == "gp_mean") else fused_prob
+        final_std_map = compute_std_map(final_var)
+
+        if cfg.signal_mode == "gp_logistic_prob":
+            mean_vmin, mean_vmax = 0.0, 1.0
+            mean_cmap = "jet"
+        else:
+            mean_vmin, mean_vmax = compute_display_limits(final_mean_map, binary=False)
+            mean_cmap = "viridis"
+
+        std_vmin, std_vmax = compute_display_limits(final_std_map, binary=False)
+
+        out_dir_vis = os.path.join(run_root, "final")
         os.makedirs(out_dir_vis, exist_ok=True)
         save_path = os.path.join(
             out_dir_vis,
@@ -2365,10 +2534,13 @@ def run_once(
             a.set_xlim(0, grid_size - 1)
             a.set_ylim(0, grid_size - 1)
 
-        # (1) Mean + UGV paths
-        im0 = ax2[0].imshow(final_mean, cmap="jet", origin="lower")
-        ax2[0].contour(final_gt, levels=[0.5], colors="white", linewidths=2, origin="lower")
-        ax2[0].set_title("Final mean + UGV paths")
+        # (1) Mean / Prob + UGV paths
+        im0 = ax2[0].imshow(final_mean_map, cmap=mean_cmap, origin="lower", vmin=mean_vmin, vmax=mean_vmax)
+        if gt_style["contour_levels"] is not None:
+            ax2[0].contour(final_gt, levels=gt_style["contour_levels"], colors="white", linewidths=2, origin="lower")
+        else:
+            ax2[0].imshow(final_gt, cmap="gray", origin="lower", alpha=0.18)
+        ax2[0].set_title("Final mean/prob + UGV paths")
         plt.colorbar(im0, ax=ax2[0], fraction=0.046, pad=0.04)
 
         for i, tr in enumerate(trajs_ugv):
@@ -2398,10 +2570,13 @@ def run_once(
             frameon=True,
         )
 
-        # (2) Var + UAV paths
-        im1 = ax2[1].imshow(final_var, cmap="jet", origin="lower")
-        ax2[1].contour(final_gt, levels=[0.5], colors="white", linewidths=2, origin="lower")
-        ax2[1].set_title("Final variance + UAV paths")
+        # (2) Std + UAV paths
+        im1 = ax2[1].imshow(final_std_map, cmap="magma", origin="lower", vmin=std_vmin, vmax=std_vmax)
+        if gt_style["contour_levels"] is not None:
+            ax2[1].contour(final_gt, levels=gt_style["contour_levels"], colors="white", linewidths=2, origin="lower")
+        else:
+            ax2[1].imshow(final_gt, cmap="gray", origin="lower", alpha=0.18)
+        ax2[1].set_title("Final std + UAV paths")
         plt.colorbar(im1, ax=ax2[1], fraction=0.046, pad=0.04)
 
         for i, tr in enumerate(trajs_uav):
@@ -2431,10 +2606,18 @@ def run_once(
             frameon=True,
         )
 
-        # (3) Ground truth
-        im2 = ax2[2].imshow(final_gt, cmap=GT_CMAP, origin="lower", vmin=0, vmax=1)
-        ax2[2].set_title("Ground truth (blue=0, red=1)")
-        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04, ticks=[0, 1])
+        # (3) GT
+        im2 = ax2[2].imshow(
+            final_gt,
+            cmap=gt_style["cmap"],
+            origin="lower",
+            vmin=gt_style["vmin"],
+            vmax=gt_style["vmax"]
+        )
+        ax2[2].set_title(gt_style["title"])
+        cb2 = plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
+        if gt_style["colorbar_ticks"] is not None:
+            cb2.set_ticks(gt_style["colorbar_ticks"])
 
         fig2.subplots_adjust(bottom=0.23, wspace=0.35)
         fig2.savefig(save_path, dpi=200)
@@ -2442,7 +2625,6 @@ def run_once(
 
         plt.close(fig2)
 
-        # ===== 元に戻す =====
         if was_interactive:
             plt.ion()
 
