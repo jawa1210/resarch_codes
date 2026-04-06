@@ -2120,12 +2120,10 @@ def run_once(
             frameon=True,
         )
 
-        # =========================
-        # (3) ground truth (blue/red)
-        # =========================
-        im2 = ax2[2].imshow(final_gt, cmap="viridis", origin="lower")
-        ax2[2].set_title("Ground truth (blue=0, red=1)")
-        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04, ticks=[0, 1])
+       # (3) ground truth
+        im2 = ax2[2].imshow(gt, cmap="viridis", origin="lower")
+        ax2[2].set_title("Ground truth")
+        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
 
         # tight_layout は使わず、凡例スペースを確保
         fig2.subplots_adjust(bottom=0.23, wspace=0.35)
