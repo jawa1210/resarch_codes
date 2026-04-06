@@ -153,7 +153,7 @@ def _stable_int_seed(*items) -> int:
 
 def make_rng(master_seed: int, scenario_id: str, run_idx: int,
              grid_size: int, num_uavs: int, num_ugvs: int) -> np.random.Generator:
-    seed = _stable_int_seed(master_seed, scenario_id, run_idx, grid_size, num_uavs, num_ugvs)
+    seed = _stable_int_seed(master_seed, run_idx, grid_size, num_uavs, num_ugvs)
     return np.random.default_rng(seed)
 
 
@@ -1923,7 +1923,8 @@ def run_once(
     print(f"[RUN {run_idx}] init_uav={uav_init.tolist()} init_ugv={ugv_init.tolist()}")
 
     #gt = generate_ground_truth_map(grid_size)
-    gt =generate_ground_truth_map_scalar(grid_size)
+    gt_seed = _stable_int_seed(master_seed, run_idx, grid_size, num_uavs, num_ugvs, "gt")
+    gt = generate_ground_truth_map_scalar(grid_size, seed=gt_seed)
 
     # --- dynamic harvest states ---
     gt_initial = gt.copy()  # 評価・可視化用に元GTを保存したいなら残す
