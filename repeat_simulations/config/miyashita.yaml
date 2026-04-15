@@ -1,15 +1,15 @@
 RESULTS_DIR: results
-RUN_NAME: miyashita_ucb
+RUN_NAME: not_collabo
 AUTO_INCREMENT: true
 
 grid_size: 30
 noise_std: 0.5
-num_uavs: 4
+num_uavs: 3
 num_ugvs: 2
-steps: 1000
+steps: 600
 
 ugv_depth: 7
-reward_type: 3
+reward_type: 6
 discount_factor: 0.95
 
 gp_sensing_noise_sigma0: 0.1
@@ -24,9 +24,9 @@ cfg:
   #waypoint_mode: ugv_future_point
   #waypoint_mode: common_weighted
 
-  #nominal_mode: to_waypoint
+  nominal_mode: to_waypoint
   #nominal_mode : to_ugv_future
-  nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
+  #nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
   #nominal_mode:to_ugv_reachable_best_amb
 
   nominal_hold_steps: 5
@@ -80,4 +80,4 @@ cfg:
   wp_min_dist: 2.0
   wp_power: 1.0
 
-cfg.ugv_move_period: 5
+  ugv_move_period: 10
