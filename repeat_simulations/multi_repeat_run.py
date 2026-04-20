@@ -1975,6 +1975,7 @@ def run_once(
     trajs_ugv = [[u.position.copy()] for u in ugvs]
 
     if visualize:
+        show_legend = False
         plt.ion()
 
         gt_style = get_gt_plot_style(gt_initial)
@@ -2084,7 +2085,17 @@ def run_once(
         ax[3].set_title(f"[RUN {run_idx}] {gt_style['title']}")
 
         handles, labels = ax[0].get_legend_handles_labels()
-        ax[0].legend(handles, labels, loc='upper right', frameon=True, fontsize=9)
+
+        if show_legend:
+            ax[0].legend(
+                    handles, labels,
+                    loc='upper left',
+                    bbox_to_anchor=(1.02, 1),  # ← 右外に逃がす
+                    borderaxespad=0,
+                    frameon=True,
+                    fontsize=9
+                )
+
     else:
         fig = ax = im_mean = im_std = im_prob = im_gt = None
         cb0 = cb1 = cb2 = None
