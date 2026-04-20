@@ -2806,6 +2806,7 @@ def main_multi():
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--set", action="append", default=[],
                         help="Override param: key=value (supports dotted keys, e.g. cfg.use_cbf=false)")
+    parser.add_argument("--run_idx", type=int, default=None)
     args = parser.parse_args()
 
     params = load_params(args.config)
@@ -2861,7 +2862,12 @@ def main_multi():
     all_data = []
     all_params_rows = []
 
-    for run_idx in range(args.num_runs):
+    if args.run_idx is not None:
+        run_indices = [args.run_idx]
+    else:
+        run_indices = range(args.num_runs)
+
+    for run_idx in run_indices:
         df_run, row = run_once(
             visualize=args.visualize,
             params=params,
