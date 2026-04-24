@@ -1885,7 +1885,87 @@ def build_result_paths(results_dir: str, run_name: str, scenario_id: str, num_ru
     params_path = _unique_path(params_path, enable=auto_increment)
     return data_path, params_path
 
+# ============================================================
+# 7) 評価用のローカル指標計算（RMSE, MAE, 分散の平均, キャリブレーション誤差の平均）
+# ============================================================
 
+def calc_reachable_certainty_metrics(
+    ugv: UGVController,
+    mean_map: np.ndarray,
+    var_map: np.ndarray,
+    gt_ref: np.ndarray,
+    depth: int,
+    allowed_mask: Optional[np.ndarray] = None,
+) -> dict:
+    mask = ugv.reachable_unvisited_mask(
+        depth=depth,
+        allowed_mask=allowed_mask
+    )
+
+    # reachable が空の場合は、現在位置だけ評価
+    if not np.any(mask):
+        mask = np.zeros_like(gt_ref, dtype=bool)
+        y, x = int(ugv.position[0]), int(ugv.position[1])
+        mask[y, x] = True
+
+    pred = mean_map[mask]
+    true = gt_ref[mask]
+    var = var_map[mask]
+
+    err = pred - true
+
+    return {
+        "reachable_rmse": float(np.sqrt(np.mean(err ** 2))),
+        "reachable_mae": float(np.mean(np.abs(err))),
+        "reachable_var": float(np.mean(var)),
+        "reachable_calib": float(np.mean(np.abs((err ** 2) - var))),
+        "reachable_cell_count": int(np.sum(mask)),
+    }
+
+
+def calc_planned_path_certainty_metrics(
+    path: list[np.ndarray],
+    mean_map: np.ndarray,
+    var_map: np.ndarray,
+    gt_ref: np.ndarray,
+) -> dict:
+    if path is None or len(path) == 0:
+        return {
+            "path_rmse": np.nan,
+            "path_mae": np.nan,
+            "path_var": np.nan,
+            "target_error": np.nan,
+            "target_var": np.nan,
+        }
+
+    H, W = gt_ref.shape
+
+    pts = []
+    for p in path:
+        y = int(np.clip(p[0], 0, H - 1))
+        x = int(np.clip(p[1], 0, W - 1))
+        pts.append((y, x))
+
+    yy = np.array([p[0] for p in pts])
+    xx = np.array([p[1] for p in pts])
+
+    pred = mean_map[yy, xx]
+    true = gt_ref[yy, xx]
+    var = var_map[yy, xx]
+    err = pred - true
+
+    # target cell = 次にUGVが向かうセル path[0]
+    ty, tx = pts[0]
+    target_error = abs(float(mean_map[ty, tx]) - float(gt_ref[ty, tx]))
+    target_var = float(var_map[ty, tx])
+
+    return {
+        "path_rmse": float(np.sqrt(np.mean(err ** 2))),
+        "path_mae": float(np.mean(np.abs(err))),
+        "path_var": float(np.mean(var)),
+        "target_error": float(target_error),
+        "target_var": float(target_var),
+    }
 # ============================================================
 # 7) run_once: a single simulation run (returns data_df, params_row)
 # ============================================================
@@ -2116,6 +2196,19 @@ def run_once(
             f"ugv{k}_mu", f"ugv{k}_var", f"ugv{k}_prob",
             f"ugv{k}_visited_count",
             f"ugv{k}_visited_mu_sum", f"ugv{k}_visited_var_sum", f"ugv{k}_visited_prob_sum",
+
+            # 評価用
+            f"ugv{k}_reachable_rmse",
+            f"ugv{k}_reachable_mae",
+            f"ugv{k}_reachable_var",
+            f"ugv{k}_reachable_calib",
+            f"ugv{k}_reachable_cell_count",
+
+            f"ugv{k}_path_rmse",
+            f"ugv{k}_path_mae",
+            f"ugv{k}_path_var",
+            f"ugv{k}_target_error",
+            f"ugv{k}_target_var",
         ]
         for c in base_cols:
             if c not in ugv_log:
@@ -2369,7 +2462,48 @@ def run_once(
         ugv_E = ugv_E_raw.copy()
         ugv_E[harvested_mask] = 0.0
 
+        # --- evaluation at UGV planning timing ---
+        eval_radius = int(deep_get(params, "eval.local_radius", 3))
+
+        # --- evaluation at UGV planning timing using reachable region ---
+        for k, ugv in enumerate(ugvs):
+            allowed = ugv_fleet.voronoi_masks[k] if (
+                ugv_fleet.voronoi_masks and k < len(ugv_fleet.voronoi_masks)
+            ) else None
+
+            metrics = calc_reachable_certainty_metrics(
+                ugv=ugv,
+                mean_map=fused_mean,
+                var_map=fused_var,
+                gt_ref=gt_initial,
+                depth=ugv_depth,
+                allowed_mask=allowed,
+            )
+
+            ugv_log[f"ugv{k}_reachable_rmse"].append(metrics["reachable_rmse"])
+            ugv_log[f"ugv{k}_reachable_mae"].append(metrics["reachable_mae"])
+            ugv_log[f"ugv{k}_reachable_var"].append(metrics["reachable_var"])
+            ugv_log[f"ugv{k}_reachable_calib"].append(metrics["reachable_calib"])
+            ugv_log[f"ugv{k}_reachable_cell_count"].append(metrics["reachable_cell_count"])
+
         ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth, ambiguity_map=fused_amb)
+
+        # --- evaluation on planned path and target cell ---
+        for k, ugv in enumerate(ugvs):
+            path = ugv_fleet.planned_paths[k] if k < len(ugv_fleet.planned_paths) else []
+
+            metrics_path = calc_planned_path_certainty_metrics(
+                path=path,
+                mean_map=fused_mean,
+                var_map=fused_var,
+                gt_ref=gt_initial,
+            )
+
+            ugv_log[f"ugv{k}_path_rmse"].append(metrics_path["path_rmse"])
+            ugv_log[f"ugv{k}_path_mae"].append(metrics_path["path_mae"])
+            ugv_log[f"ugv{k}_path_var"].append(metrics_path["path_var"])
+            ugv_log[f"ugv{k}_target_error"].append(metrics_path["target_error"])
+            ugv_log[f"ugv{k}_target_var"].append(metrics_path["target_var"])
 
         V_eff = None
         A_eff = None

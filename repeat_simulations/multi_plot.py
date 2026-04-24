@@ -4,6 +4,7 @@ import matplotlib as mpl
 import japanize_matplotlib  # noqa: F401
 import os
 import numpy as np
+import matplotlib.patheffects as pe
 
 # ── フォント設定 ────────────────────────────────
 mpl.rcParams['font.family']        = 'IPAexGothic'
@@ -101,6 +102,7 @@ def plot_two_results_files(
         gamma: float | None = 3.0,
         max_step: int | None = None,     # ★追加: この step まで
         max_time: float | None = None,   # ★追加: この時間(s)まで（max_stepより優先）
+        plot_eval: bool = True,
     ):
     """
     file2 を None にすると単独ファイルのプロットになる。
@@ -110,7 +112,7 @@ def plot_two_results_files(
     → 理論線: J_ideal(t) = J0 - N_uav * (gamma/ds) * t   （★以前仕様）
     """
 
-    has_second = False
+    has_second=None
     # ── CSV 読み込み ───────────────────────────
     df1_raw = pd.read_csv(file1)
     df1 = _sanitize_df(df1_raw, "file1")
@@ -184,6 +186,7 @@ def plot_two_results_files(
             continue
         t = sub["step"].to_numpy() * dt
         J = sub["J"].to_numpy()
+
         ax.plot(
             t, J,
             color=color1,
@@ -191,6 +194,15 @@ def plot_two_results_files(
             label=(f"{label1} 各試行" if i == 0 else None),
         )
 
+        # 終点に run_index を表示
+        ax.text(
+            t[-1], J[-1],
+            f"{r}",
+            fontsize=10,
+            color=color1,
+            ha="left",
+            va="center"
+        )
     # file1: 平均（太線）
     ax.plot(
         t1_mean, J1_mean,
@@ -207,11 +219,21 @@ def plot_two_results_files(
                 continue
             t = sub["step"].to_numpy() * dt
             J = sub["J"].to_numpy()
+
             ax.plot(
                 t, J,
                 color=color2,
                 alpha=0.3,
                 label=(f"{label2} 各試行" if i == 0 else None),
+            )
+
+            ax.text(
+                t[-1], J[-1],
+                f"{r}",
+                fontsize=10,
+                color=color2,
+                ha="left",
+                va="center"
             )
 
         ax.plot(
@@ -244,6 +266,7 @@ def plot_two_results_files(
     ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
     ax.set_ylabel("目的関数 $J$")
     ax.set_title("Objective $J$ の推移（2条件比較）" if has_second else f"Objective $J$ の推移（{label1}）")
+    ax.set_ylim(bottom=0.0)
     ax.grid(True)
     ax.legend()
     plt.tight_layout()
@@ -260,12 +283,23 @@ def plot_two_results_files(
             continue
         t = sub["step"].to_numpy() * dt
         C = sub["true_crop_sum"].to_numpy()
+
         ax.plot(
             t, C,
             color=color1,
             alpha=0.3,
             label=(f"{label1} 各試行" if i == 0 else None),
         )
+
+        # ★追加：終点にrun番号
+        ax.text(
+        t[-1], C[-1],
+        f"{r}",
+        fontsize=10,
+        color=color1,
+        ha="left",
+        va="center"
+    )
 
     ax.plot(
         t1_mean, C1_mean,
@@ -288,6 +322,14 @@ def plot_two_results_files(
                 label=(f"{label2} 各試行" if i == 0 else None),
             )
 
+            ax.text(
+                t[-1], C[-1],
+                f"{r}",
+                fontsize=10,
+                color=color2,
+                ha="left",
+                va="center"
+            )
         ax.plot(
             t2_mean, C2_mean,
             color=color2,
@@ -303,28 +345,126 @@ def plot_two_results_files(
     plt.tight_layout()
     plt.show()
 
+    # =====================================================
+    # 3) Evaluation metrics at UGV planning timing
+    # =====================================================
+    if plot_eval:
+        eval_metrics = [
+            ("reachable_rmse", "Reachable領域RMSE", "推定誤差 RMSE"),
+            ("reachable_mae", "Reachable領域MAE", "推定誤差 MAE"),
+            ("reachable_var", "Reachable領域平均分散", "GP分散"),
+            ("reachable_calib", "Reachable領域Calibration誤差", r"$|e^2-\sigma^2|$"),
+
+            ("path_rmse", "Planned path RMSE", "経路上の推定誤差 RMSE"),
+            ("path_mae", "Planned path MAE", "経路上の推定誤差 MAE"),
+            ("path_var", "Planned path 平均分散", "経路上のGP分散"),
+
+            ("target_error", "Target cell error", "次セルの絶対誤差"),
+            ("target_var", "Target cell variance", "次セルのGP分散"),
+        ]
+
+        for metric_key, title, ylabel in eval_metrics:
+            cols1 = [c for c in df1.columns if c.startswith("ugv") and c.endswith(f"_{metric_key}")]
+
+            if len(cols1) == 0:
+                print(f"[WARN] {metric_key} の列がCSVにありません。シミュレーションコード側で保存してください。")
+                continue
+
+            df1_eval = df1.copy()
+            df1_eval[metric_key] = df1_eval[cols1].mean(axis=1)
+
+            mean1_eval = df1_eval.groupby("step")[metric_key].mean().reset_index()
+            t1_eval = mean1_eval["step"].to_numpy() * dt
+            y1_eval = mean1_eval[metric_key].to_numpy()
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+
+            for i, r in enumerate(runs1):
+                sub = df1_eval[df1_eval["run"] == r].sort_values("step")
+                if sub.empty:
+                    continue
+                t = sub["step"].to_numpy() * dt
+                y = sub[metric_key].to_numpy()
+
+                ax.plot(
+                    t, y,
+                    color=color1,
+                    alpha=0.25,
+                    label=(f"{label1} 各試行" if i == 0 else None),
+                )
+
+            ax.plot(
+                t1_eval, y1_eval,
+                color=color1,
+                linewidth=3.0,
+                label=f"{label1} 平均",
+            )
+
+            if has_second:
+                cols2 = [c for c in df2.columns if c.startswith("ugv") and c.endswith(f"_{metric_key}")]
+
+                if len(cols2) == 0:
+                    print(f"[WARN] file2 に {metric_key} の列がありません。")
+                else:
+                    df2_eval = df2.copy()
+                    df2_eval[metric_key] = df2_eval[cols2].mean(axis=1)
+
+                    mean2_eval = df2_eval.groupby("step")[metric_key].mean().reset_index()
+                    t2_eval = mean2_eval["step"].to_numpy() * dt
+                    y2_eval = mean2_eval[metric_key].to_numpy()
+
+                    for i, r in enumerate(runs2):
+                        sub = df2_eval[df2_eval["run"] == r].sort_values("step")
+                        if sub.empty:
+                            continue
+                        t = sub["step"].to_numpy() * dt
+                        y = sub[metric_key].to_numpy()
+
+                        ax.plot(
+                            t, y,
+                            color=color2,
+                            alpha=0.25,
+                            label=(f"{label2} 各試行" if i == 0 else None),
+                        )
+
+                    ax.plot(
+                        t2_eval, y2_eval,
+                        color=color2,
+                        linewidth=3.0,
+                        label=f"{label2} 平均",
+                    )
+
+            ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
+            ax.set_ylabel(ylabel)
+            ax.set_title(title + "（UGV経路計画時点）")
+            ax.grid(True)
+            ax.legend()
+            plt.tight_layout()
+            plt.show()
+
 
 if __name__ == "__main__":
     # ① 単独ファイル（以前表示）
-    file_single = "test_results_3runs.csv"
-    plot_two_results_files(
-        file_single,
-        file2=None,
-        label1="条件",
-        dt=0.1,
-        ds=0.5,
-        gamma=3.0,
-        max_step=1200
-    )
-
-    # ② 2条件比較（以前表示）
-    # file_A = "multi_uav_multi_ugv_use_path_suenaga_results_10runs.csv"
-    # file_B = "multi_uav_multi_ugv_results_10runs.csv"
+    # file_single = "miyashita_future_ucb_poster_seed1234_data_1runs_004.csv"
     # plot_two_results_files(
-    #     file_A, file_B,
-    #     label1="条件A",
-    #     label2="条件B",
+    #     file_single,
+    #     file2=None,
+    #     label1="条件",
     #     dt=0.1,
     #     ds=0.5,
-    #     gamma=3.0,
+    #     gamma=8.0,
+    #     max_step=1000
     # )
+
+    # ② 2条件比較（以前表示）
+    file_B = "gp_logistic_prob_gp_coop_seed1234_data_10runs.csv"
+    file_A = "not_collabo_gp_not_colabb_seed1234_data_10runs.csv"
+    plot_two_results_files(
+        file_A, file_B,
+        label1="条件A",
+        label2="条件B",
+        dt=0.1,
+        ds=0.5,
+        gamma=8.0,
+        plot_eval=True,   # Falseにすれば評価plotをOFF
+    )
