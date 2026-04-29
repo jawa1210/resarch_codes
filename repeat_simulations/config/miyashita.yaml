@@ -56,7 +56,7 @@ cfg:
   control_period: 0.1
   gp_update_period: 0.5
 
-  cbf_j_alpha: 1.0
+  cbf_j_alpha: 0.01
   cbf_j_gamma: 6.0
 
   signal_mode: gp_logistic_prob
