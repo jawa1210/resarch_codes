@@ -361,6 +361,15 @@ def plot_two_results_files(
 
             ("target_error", "Target cell error", "次セルの絶対誤差"),
             ("target_var", "Target cell variance", "次セルのGP分散"),
+            ("path_true_sum", "Planned path 真値合計", "経路上の真値合計"),
+            ("path_mu_sum", "Planned path 推定平均合計", "経路上の推定平均合計"),
+            ("path_var_sum", "Planned path 分散合計", "経路上の分散合計"),
+            ("path_prob_sum", "Planned path 確率合計", "経路上の確率合計"),
+            ("path_expected_sum", "Planned path 期待収穫量合計", r"$\sum \mu p$"),
+            ("target_true", "Target cell 真値", "次セルの真値"),
+            ("target_mu", "Target cell 推定平均", "次セルの推定平均"),
+            ("target_prob", "Target cell 確率", "次セルの確率"),
+            ("target_expected", "Target cell 期待収穫量", r"$\mu p$"),
         ]
 
         for metric_key, title, ylabel in eval_metrics:
