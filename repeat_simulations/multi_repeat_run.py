@@ -2311,6 +2311,11 @@ def run_once(
     # logs
     J_history = []
     true_sum_history = []
+    calib_theta_history = []
+    calib_w_history = []
+    calib_b_history = []
+    calib_learned_threshold_history = []
+    calib_num_samples_history = []
     ugv_log = {"step": []}
     fixed_std_range_initialized = False
 
@@ -2735,6 +2740,16 @@ def run_once(
         J = float(np.sum(fused_var))
         J_history.append(J)
 
+        true_sum_history.append(harvested_total)
+
+        calib_theta_history.append(float(calibrator.threshold))
+        calib_w_history.append(float(calibrator.w))
+        calib_b_history.append(float(calibrator.b))
+        calib_learned_threshold_history.append(
+            float(-calibrator.b / calibrator.w) if abs(calibrator.w) > 1e-12 else np.nan
+        )
+        calib_num_samples_history.append(len(calibrator.g_list))
+
         total_crop = 0.0
         for u in ugvs:
             total_crop += float(np.sum(gt[u.visited]))
@@ -2980,13 +2995,28 @@ def run_once(
         visited_union |= u.visited
     total_crop_union = float(harvested_total)
     print(f"[RUN {run_idx}] UGVs harvested crop sum: {total_crop_union:.3f}")
+    learned_th = float(-calibrator.b / calibrator.w) if abs(calibrator.w) > 1e-12 else np.nan
+
+    print(
+        f"[RUN {run_idx}] Calibrator final: "
+        f"theta_fixed={calibrator.threshold:.4f}, "
+        f"w={calibrator.w:.4f}, "
+        f"b={calibrator.b:.4f}, "
+        f"learned_threshold=-b/w={learned_th:.4f}, "
+        f"samples={len(calibrator.g_list)}"
+    )
 
     # ---- build run data dataframe (with run_idx column) ----
     df = pd.DataFrame({
         'run_idx': run_idx,
         'step': np.arange(len(J_history)),
         'J': J_history,
-        'true_crop_sum': true_sum_history
+        'true_crop_sum': true_sum_history,
+        'calibrator_theta': calib_theta_history,
+        'calibrator_w': calib_w_history,
+        'calibrator_b': calib_b_history,
+        'calibrator_learned_threshold': calib_learned_threshold_history,
+        'calibrator_num_samples': calib_num_samples_history,
     })
     df_ugv = pd.DataFrame(ugv_log)
     df_ugv["run_idx"] = run_idx
