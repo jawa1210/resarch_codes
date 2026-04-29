@@ -33,6 +33,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import matplotlib.patheffects as pe
 from matplotlib.colors import to_rgba
+import time
+from tqdm import tqdm
 
 
 from qpsolvers import solve_qp
@@ -1859,15 +1861,15 @@ class UAVController:
                 virtual_points=self._last_obs_points,
             )
 
-            print("分散変化量=", I_tilde - self._I_prev, "I_0=", self._I0, "I_tilde=", I_tilde)
+            #print("分散変化量=", I_tilde - self._I_prev, "I_0=", self._I0, "I_tilde=", I_tilde)
             self._I_prev = I_tilde
 
             vlim = float(cfg.v_limit)
             if (xi_J2 + float(np.linalg.norm(xi_J1)) * vlim) < 0.0:
-                print(f"[UAV{self.uav_id}] J-CBF skip: necessary condition fails "
-                    f"(xi2 + ||xi1|| vlim < 0). "
-                    f"||xi1||={np.linalg.norm(xi_J1):.3e} xi2={xi_J2:.3e} vlim={vlim:.3f} "
-                    f"I_tilde={I_tilde:.3f} I0={self._I0:.3f}")
+                #print(f"[UAV{self.uav_id}] J-CBF skip: necessary condition fails "
+                #    f"(xi2 + ||xi1|| vlim < 0). "
+                #    f"||xi1||={np.linalg.norm(xi_J1):.3e} xi2={xi_J2:.3e} vlim={vlim:.3f} "
+                #    f"I_tilde={I_tilde:.3f} I0={self._I0:.3f}")
                 enable_J_cbf = False
 
         # (3) waypoint を作る
@@ -1879,7 +1881,7 @@ class UAVController:
             try:
                 cfg.waypoint_mode = "miyashita"
                 waypoint = self._choose_waypoint(V_for_wp)
-                print("========================宮下モード=============================")
+                #print("========================宮下モード=============================")
             finally:
                 cfg.waypoint_mode = _orig
 
@@ -1912,9 +1914,9 @@ class UAVController:
             u = self.v.copy()  # 今回は self.v = u_star にしてるので
 
             lhs = float(xi_J1 @ u + xi_J2)   # >= 0 なら制約OK
-            print("feasible@u=0?", (lhs >= 0.0))
-            print("Xi_J1=", xi_J1, " Xi_J2=", xi_J2)
-            print("velocity=", self.v)
+            #print("feasible@u=0?", (lhs >= 0.0))
+            #print("Xi_J1=", xi_J1, " Xi_J2=", xi_J2)
+            #print("velocity=", self.v)
 
 
         spd = float(np.linalg.norm(self.v))
@@ -2331,6 +2333,15 @@ def run_once(
             f"ugv{k}_path_var",
             f"ugv{k}_target_error",
             f"ugv{k}_target_var",
+            f"ugv{k}_path_true_sum",
+            f"ugv{k}_path_mu_sum",
+            f"ugv{k}_path_var_sum",
+            f"ugv{k}_path_prob_sum",
+            f"ugv{k}_path_expected_sum",
+            f"ugv{k}_target_true",
+            f"ugv{k}_target_mu",
+            f"ugv{k}_target_prob",
+            f"ugv{k}_target_expected",
         ]
         for c in base_cols:
             if c not in ugv_log:
@@ -2512,7 +2523,17 @@ def run_once(
 
 
     # sim loop
-    for step in range(steps):
+    # sim loop
+    run_start_time = time.time()
+
+    pbar = tqdm(
+        range(steps),
+        desc=f"[RUN {run_idx}]",
+        ncols=120,
+        leave=True
+    )
+
+    for step in pbar:
         if step % 50 == 0:
             print(f"[RUN {run_idx}] === Step {step} ===")
 
@@ -2640,9 +2661,11 @@ def run_once(
             ugv_log[f"ugv{k}_path_mu_sum"].append(metrics_path["path_mu_sum"])
             ugv_log[f"ugv{k}_path_var_sum"].append(metrics_path["path_var_sum"])
             ugv_log[f"ugv{k}_path_prob_sum"].append(metrics_path["path_prob_sum"])
+            ugv_log[f"ugv{k}_path_expected_sum"].append(metrics_path["path_expected_sum"])
             ugv_log[f"ugv{k}_target_true"].append(metrics_path["target_true"])
             ugv_log[f"ugv{k}_target_mu"].append(metrics_path["target_mu"])
             ugv_log[f"ugv{k}_target_prob"].append(metrics_path["target_prob"])
+            ugv_log[f"ugv{k}_target_expected"].append(metrics_path["target_expected"])
 
         V_eff = None
         A_eff = None
@@ -2805,8 +2828,16 @@ def run_once(
                 )
 
 
-        if step % 100 == 0:
-            print(f"[RUN {run_idx}] step={step} J={J:.3f}, True crop sum={total_crop:.3f}")
+        elapsed = time.time() - run_start_time
+        progress = (step + 1) / steps
+        eta = elapsed / max(progress, 1e-12) - elapsed
+
+        pbar.set_postfix({
+            "crop": f"{harvested_total:.2f}",
+            "J": f"{J:.1f}",
+            "elapsed": f"{elapsed/60:.1f}m",
+            "eta": f"{eta/60:.1f}m",
+        })
 
     if visualize:
         plt.ioff()
@@ -3160,7 +3191,15 @@ def main_multi():
     else:
         run_indices = range(args.num_runs)
 
-    for run_idx in run_indices:
+    total_start_time = time.time()
+    run_indices = list(run_indices)
+    total_runs = len(run_indices)
+
+    for run_count, run_idx in enumerate(run_indices, start=1):
+        run_start_time = time.time()
+
+        print(f"\n[ALL RUNS] start run {run_count}/{total_runs} (run_idx={run_idx})")
+
         df_run, row = run_once(
             visualize=args.visualize,
             params=params,
@@ -3170,6 +3209,21 @@ def main_multi():
             scenario_id=args.scenario_id,
             run_root=run_root,
         )
+
+        run_elapsed = time.time() - run_start_time
+        total_elapsed = time.time() - total_start_time
+
+        avg_per_run = total_elapsed / run_count
+        remaining_runs = total_runs - run_count
+        eta_total = avg_per_run * remaining_runs
+
+        print(
+            f"[ALL RUNS] finished {run_count}/{total_runs} | "
+            f"this_run={run_elapsed/60:.1f} min | "
+            f"total_elapsed={total_elapsed/60:.1f} min | "
+            f"eta_total={eta_total/60:.1f} min"
+        )
+
         all_data.append(df_run)
         all_params_rows.append(row)
 
