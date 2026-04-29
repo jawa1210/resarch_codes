@@ -81,3 +81,10 @@ cfg:
   wp_power: 1.0
 
   ugv_move_period: 10
+
+  calibrator:
+  threshold: 2.0
+  init_w: 1.0
+  lr: 0.03
+  l2: 0.0001
+  min_samples: 20
