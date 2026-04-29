@@ -288,6 +288,83 @@ class FieldLimitation:
         return [(cbf, -grad[0], -grad[1], self.slack)]
 
 
+class HarvestLogitCalibrator:
+    """
+    収穫量 g を logit a = w*g + b に変換するオンライン学習器。
+    p = sigmoid(a) として「価値ある収穫セル確率」を作る。
+    """
+
+    def __init__(
+        self,
+        threshold: float = 2.0,
+        init_w: float = 1.0,
+        lr: float = 0.03,
+        l2: float = 1e-4,
+        min_samples: int = 20,
+    ):
+        self.threshold = float(threshold)
+        self.w = float(init_w)
+        self.b = -float(init_w) * float(threshold)
+        self.lr = float(lr)
+        self.l2 = float(l2)
+        self.min_samples = int(min_samples)
+
+        self.g_list = []
+        self.y_list = []
+
+    @staticmethod
+    def sigmoid(z):
+        z = np.clip(z, -40.0, 40.0)
+        return 1.0 / (1.0 + np.exp(-z))
+
+    def add_sample(self, harvested_amount: float):
+        g = float(harvested_amount)
+
+        # 「価値がある収穫量」を教師ラベル化
+        y = 1.0 if g >= self.threshold else 0.0
+
+        self.g_list.append(g)
+        self.y_list.append(y)
+
+    def fit_step(self, n_iter: int = 20):
+        if len(self.g_list) < self.min_samples:
+            return
+
+        g = np.asarray(self.g_list, dtype=float)
+        y = np.asarray(self.y_list, dtype=float)
+
+        # 0/1の両方がないと分類境界を学べない
+        if np.unique(y).size < 2:
+            return
+
+        for _ in range(n_iter):
+            z = self.w * g + self.b
+            p = self.sigmoid(z)
+            err = p - y
+
+            grad_w = np.mean(err * g) + self.l2 * self.w
+            grad_b = np.mean(err)
+
+            self.w -= self.lr * grad_w
+            self.b -= self.lr * grad_b
+
+    def prob_from_mu_var(self, mu_map: np.ndarray, var_map: np.ndarray) -> np.ndarray:
+        """
+        g ~ N(mu, var)
+        a = w*g + b
+        a ~ N(w*mu+b, w^2*var)
+
+        MacKay近似:
+        p ≈ sigmoid( a_mu / sqrt(1 + pi/8 * a_var) )
+        """
+        var_map = np.maximum(var_map, 0.0)
+
+        a_mu = self.w * mu_map + self.b
+        a_var = (self.w ** 2) * var_map
+
+        z_raw = a_mu / np.sqrt(1.0 + (np.pi / 8.0) * a_var)
+        return self.sigmoid(z_raw)
+
 
 # ============================================================
 # 1) Sparse Online GP (SOGP) + kernel
@@ -1928,6 +2005,7 @@ def calc_planned_path_certainty_metrics(
     mean_map: np.ndarray,
     var_map: np.ndarray,
     gt_ref: np.ndarray,
+    prob_map: Optional[np.ndarray] = None,
 ) -> dict:
     if path is None or len(path) == 0:
         return {
@@ -1936,6 +2014,15 @@ def calc_planned_path_certainty_metrics(
             "path_var": np.nan,
             "target_error": np.nan,
             "target_var": np.nan,
+            "path_true_sum": np.nan,
+            "path_mu_sum": np.nan,
+            "path_var_sum": np.nan,
+            "path_prob_sum": np.nan,
+            "target_true": np.nan,
+            "target_mu": np.nan,
+            "target_prob": np.nan,
+            "path_expected_sum": np.nan,
+            "target_expected": np.nan,
         }
 
     H, W = gt_ref.shape
@@ -1946,18 +2033,32 @@ def calc_planned_path_certainty_metrics(
         x = int(np.clip(p[1], 0, W - 1))
         pts.append((y, x))
 
-    yy = np.array([p[0] for p in pts])
-    xx = np.array([p[1] for p in pts])
+    yy = np.array([p[0] for p in pts], dtype=int)
+    xx = np.array([p[1] for p in pts], dtype=int)
 
     pred = mean_map[yy, xx]
     true = gt_ref[yy, xx]
     var = var_map[yy, xx]
     err = pred - true
 
-    # target cell = 次にUGVが向かうセル path[0]
+    if prob_map is not None:
+        prob = prob_map[yy, xx]
+        path_prob_sum = float(np.sum(prob))
+        path_expected_sum = float(np.sum(pred * prob))
+    else:
+        prob = None
+        path_prob_sum = np.nan
+        path_expected_sum = np.nan
+
     ty, tx = pts[0]
+
     target_error = abs(float(mean_map[ty, tx]) - float(gt_ref[ty, tx]))
     target_var = float(var_map[ty, tx])
+    target_prob = float(prob_map[ty, tx]) if prob_map is not None else np.nan]
+    target_expected = (
+        float(mean_map[ty, tx] * prob_map[ty, tx])
+        if prob_map is not None else np.nan
+    )
 
     return {
         "path_rmse": float(np.sqrt(np.mean(err ** 2))),
@@ -1965,7 +2066,19 @@ def calc_planned_path_certainty_metrics(
         "path_var": float(np.mean(var)),
         "target_error": float(target_error),
         "target_var": float(target_var),
+
+        "path_true_sum": float(np.sum(true)),
+        "path_mu_sum": float(np.sum(pred)),
+        "path_var_sum": float(np.sum(var)),
+        "path_prob_sum": path_prob_sum,
+
+        "target_true": float(gt_ref[ty, tx]),
+        "target_mu": float(mean_map[ty, tx]),
+        "target_prob": target_prob,
+        "path_expected_sum": path_expected_sum,
+        "target_expected": target_expected,
     }
+
 # ============================================================
 # 7) run_once: a single simulation run (returns data_df, params_row)
 # ============================================================
@@ -2010,6 +2123,15 @@ def run_once(
     gt_initial = gt.copy()  # 評価・可視化用に元GTを保存したいなら残す
     harvested_mask = np.zeros_like(gt, dtype=bool)
     harvested_total = 0.0
+
+    calibrator = HarvestLogitCalibrator(
+        threshold=float(deep_get(params, "calibrator.threshold", 2.0)),
+        init_w=float(deep_get(params, "calibrator.init_w", 1.0)),
+        lr=float(deep_get(params, "calibrator.lr", 0.03)),
+        l2=float(deep_get(params, "calibrator.l2", 1e-4)),
+        min_samples=int(deep_get(params, "calibrator.min_samples", 20)),
+    )
+
 
     ugvs = []
     for k in range(num_ugvs):
@@ -2421,8 +2543,17 @@ def run_once(
 
         fused_mean = np.mean(np.stack(mean_maps, axis=0), axis=0)
         fused_var = np.mean(np.stack(var_maps, axis=0), axis=0)
-        fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
+
+
+        # 学習済み g -> logit 変換を用いて probability map を作る
+        if cfg.signal_mode == "gp_logistic_prob":
+            fused_prob = calibrator.prob_from_mu_var(fused_mean, fused_var)
+        else:
+            fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
+
         fused_amb = fused_prob * (1.0 - fused_prob)
+
+
         if visualize and (not fixed_std_range_initialized):
             std_init = compute_std_map(fused_var)
             std_vmin = 0.0
@@ -2497,6 +2628,7 @@ def run_once(
                 mean_map=fused_mean,
                 var_map=fused_var,
                 gt_ref=gt_initial,
+                prob_map=fused_prob,
             )
 
             ugv_log[f"ugv{k}_path_rmse"].append(metrics_path["path_rmse"])
@@ -2504,6 +2636,13 @@ def run_once(
             ugv_log[f"ugv{k}_path_var"].append(metrics_path["path_var"])
             ugv_log[f"ugv{k}_target_error"].append(metrics_path["target_error"])
             ugv_log[f"ugv{k}_target_var"].append(metrics_path["target_var"])
+            ugv_log[f"ugv{k}_path_true_sum"].append(metrics_path["path_true_sum"])
+            ugv_log[f"ugv{k}_path_mu_sum"].append(metrics_path["path_mu_sum"])
+            ugv_log[f"ugv{k}_path_var_sum"].append(metrics_path["path_var_sum"])
+            ugv_log[f"ugv{k}_path_prob_sum"].append(metrics_path["path_prob_sum"])
+            ugv_log[f"ugv{k}_target_true"].append(metrics_path["target_true"])
+            ugv_log[f"ugv{k}_target_mu"].append(metrics_path["target_mu"])
+            ugv_log[f"ugv{k}_target_prob"].append(metrics_path["target_prob"])
 
         V_eff = None
         A_eff = None
@@ -2558,6 +2697,10 @@ def run_once(
                 if moved_to_new_cell and (not harvested_mask[yi, xj]):
                     harvested_amount = float(gt[yi, xj])
                     harvested_total += harvested_amount
+
+                    # 収穫量 g を教師データとして g -> logit 変換を更新
+                    calibrator.add_sample(harvested_amount)
+                    calibrator.fit_step(n_iter=20)
 
                     # 真の環境を更新
                     gt[yi, xj] = 0.0
@@ -2878,6 +3021,11 @@ def run_once(
 
         'init_uav_positions': json.dumps(uav_init.tolist(), ensure_ascii=False),
         'init_ugv_positions': json.dumps(ugv_init.tolist(), ensure_ascii=False),
+        'calibrator_threshold': calibrator.threshold,
+        'calibrator_w': calibrator.w,
+        'calibrator_b': calibrator.b,
+        'calibrator_learned_threshold': float(-calibrator.b / calibrator.w) if abs(calibrator.w) > 1e-12 else np.nan,
+        'calibrator_num_samples': len(calibrator.g_list),
     }
 
     return df, params_row
