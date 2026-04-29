@@ -2054,7 +2054,7 @@ def calc_planned_path_certainty_metrics(
 
     target_error = abs(float(mean_map[ty, tx]) - float(gt_ref[ty, tx]))
     target_var = float(var_map[ty, tx])
-    target_prob = float(prob_map[ty, tx]) if prob_map is not None else np.nan]
+    target_prob = float(prob_map[ty, tx]) if prob_map is not None else np.nan
     target_expected = (
         float(mean_map[ty, tx] * prob_map[ty, tx])
         if prob_map is not None else np.nan
