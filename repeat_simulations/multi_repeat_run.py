@@ -2753,7 +2753,6 @@ def run_once(
         total_crop = 0.0
         for u in ugvs:
             total_crop += float(np.sum(gt[u.visited]))
-        true_sum_history.append(harvested_total)
 
         if visualize:
             mean_map_to_show = fused_mean
