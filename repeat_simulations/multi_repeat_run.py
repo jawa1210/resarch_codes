@@ -2577,7 +2577,7 @@ def run_once(
         else:
             fused_prob = np.mean(np.stack(prob_maps, axis=0), axis=0)
 
-        fused_amb = fused_prob * (1.0 - fused_prob)
+        fused_amb = fused_var * fused_prob * (1.0 - fused_prob)
 
 
         if visualize and (not fixed_std_range_initialized):
