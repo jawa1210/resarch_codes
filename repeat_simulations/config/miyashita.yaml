@@ -9,7 +9,8 @@ num_ugvs: 2
 steps: 1800
 
 ugv_depth: 7
-reward_type: 6
+reward_type: 8
+ugv_amb_lambda: 5.0
 discount_factor: 0.95
 
 gp_sensing_noise_sigma0: 0.1
