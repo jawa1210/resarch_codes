@@ -737,6 +737,7 @@ class UGVController:
         reward_type: int = 0,
         discount_factor: float = 0.95,
         revisit_penalty: float = 0.3,
+        amb_lambda: float = 5.0,
     ):
         self.grid_size = grid_size
         self.reward_type = reward_type
@@ -745,6 +746,7 @@ class UGVController:
         self.visited[self.position[0], self.position[1]] = True
         self.discount_factor = discount_factor
         self.revisit_penalty = float(revisit_penalty)
+        self.amb_lambda = float(amb_lambda)
 
     def _calculate_reward(
         self,
@@ -784,6 +786,15 @@ class UGVController:
             eps2 = 1e-8
             sigma_tilde = np.sqrt(V) / (np.median(np.sqrt(variance_map)) + eps2)
             return E - np.sqrt(beta) * sigma_tilde
+        elif reward_type == 8:
+            # E = mu * p
+            return E
+
+        elif reward_type == 9:
+            # E = mu * p
+            # U = sigma^2 * p * (1-p)
+            return E - self.amb_lambda * U
+
         else:
             return 0.0
 
@@ -2143,7 +2154,14 @@ def run_once(
 
     ugvs = []
     for k in range(num_ugvs):
-        ugv = UGVController(grid_size, reward_type=reward_type, discount_factor=discount_factor)
+        amb_lambda = float(deep_get(params, "ugv_amb_lambda", 5.0))
+
+        ugv = UGVController(
+            grid_size,
+            reward_type=reward_type,
+            discount_factor=discount_factor,
+            amb_lambda=amb_lambda,
+        )
         p0 = ugv_init[k]
         ugv.position = p0.astype(int)
         ugv.visited[ugv.position[0], ugv.position[1]] = True
@@ -2702,7 +2720,12 @@ def run_once(
             ugv_log[f"ugv{k}_visited_prob_sum"].append(float(np.sum(fused_prob[m])) if cnt > 0 else 0.0)
 
         ugv_fleet.compute_voronoi(grid_size, grid_size)
-        ugv_E_raw = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
+        if reward_type in [8, 9]:
+            # mu * p
+            ugv_E_raw = np.maximum(fused_mean, 0.0) * fused_prob
+        else:
+            ugv_E_raw = fused_prob if (cfg.signal_mode == "gp_logistic_prob") else fused_mean
+
         ugv_E = ugv_E_raw.copy()
         ugv_E[harvested_mask] = 0.0
 
