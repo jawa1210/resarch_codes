@@ -82,8 +82,8 @@ cfg:
 
   ugv_move_period: 10
 
-  calibrator:
-  threshold: 2.0
+calibrator:
+  threshold: 4.0
   init_w: 1.0
   lr: 0.03
   l2: 0.0001

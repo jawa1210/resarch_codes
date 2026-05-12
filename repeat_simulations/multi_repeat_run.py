@@ -318,6 +318,12 @@ class HarvestLogitCalibrator:
     def sigmoid(z):
         z = np.clip(z, -40.0, 40.0)
         return 1.0 / (1.0 + np.exp(-z))
+    
+    @property
+    def learned_threshold(self):
+        if abs(self.w) < 1e-12:
+            return np.nan
+        return float(-self.b / self.w)
 
     def add_sample(self, harvested_amount: float):
         g = float(harvested_amount)
@@ -2187,7 +2193,8 @@ def run_once(
         mean_vmin, mean_vmax = compute_display_limits(gt_initial, binary=False)
 
         std0 = np.zeros((grid_size, grid_size), dtype=float)
-        std_vmin, std_vmax = compute_display_limits(std0, binary=False)
+        std_vmin = 0.0
+        std_vmax = 1.0
 
         fig, ax = plt.subplots(1, 4, figsize=(24, 5))
         fig.subplots_adjust(left=0.06, right=0.98, bottom=0.16, wspace=0.30)
@@ -2277,6 +2284,12 @@ def run_once(
                                 origin='lower', zorder=9)
                     for i in range(num_uavs)]
         vor_cnt_lines = [None for _ in range(num_uavs)]
+        prob_threshold_contour = None
+        prob_threshold_hatch = None
+        mean_threshold_contour = None
+        mean_threshold_hatch = None
+        std_threshold_contour = None
+        std_threshold_hatch = None
 
         for a in ax:
             a.set_xlim(0, grid_size - 1)
@@ -2307,6 +2320,10 @@ def run_once(
         ugv_plan_lines = ugv_plan_targets = []
         vor_layers = []
         vor_cnt_lines = []
+        prob_threshold_contour = None
+        prob_threshold_hatch = None
+        mean_threshold_contour = None
+        mean_threshold_hatch = None
 
     # logs
     J_history = []
@@ -2369,6 +2386,8 @@ def run_once(
         show: bool = False,
         signal_mode: str = "gp_mean",
         fused_prob: Optional[np.ndarray] = None,
+        threshold_value: float = np.nan,
+        learned_threshold: float = np.nan,
     ):
         os.makedirs(out_dir, exist_ok=True)
 
@@ -2382,21 +2401,21 @@ def run_once(
 
         gt_style = get_gt_plot_style(gt)
 
-        if signal_mode == "gp_logistic_prob":
-            mean_map_to_show = fused_prob if fused_prob is not None else np.clip(
-                1.0 / (1.0 + np.exp(-fused_mean)), 0.0, 1.0
-            )
-            mean_vmin, mean_vmax = 0.0, 1.0
-            mean_cmap = "jet"
-        else:
-            mean_map_to_show = fused_mean
-            mean_vmin, mean_vmax = compute_display_limits(mean_map_to_show, binary=False)
-            mean_cmap = "viridis"
+        mean_map_to_show = fused_mean
+        mean_vmin = float(np.nanmin(gt))
+        mean_vmax = float(np.nanmax(gt))
+        mean_cmap = "viridis"
+
+        prob_map_to_show = (
+            fused_prob if fused_prob is not None
+            else np.clip(1.0 / (1.0 + np.exp(-fused_mean)), 0.0, 1.0)
+        )
 
         std_map_to_show = compute_std_map(fused_var)
-        std_vmin, std_vmax = compute_display_limits(std_map_to_show, binary=False)
+        std_vmin = 0.0
+        std_vmax = 1.0
 
-        fig2, ax2 = plt.subplots(1, 3, figsize=(18, 5))
+        fig2, ax2 = plt.subplots(1, 4, figsize=(24, 5))
         for a in ax2:
             a.set_aspect("equal")
             a.set_xlim(0, fused_mean.shape[1] - 1)
@@ -2421,8 +2440,25 @@ def run_once(
         else:
             ax2[0].imshow(gt, cmap="gray", origin="lower", alpha=0.18)
 
-        ax2[0].set_title(f"Mean/Prob + UGV paths (step={step})")
+        ax2[0].set_title(f"Mean + UGV paths (step={step})")
         plt.colorbar(im0, ax=ax2[0], fraction=0.046, pad=0.04)
+        threshold_mask = (mean_map_to_show >= learned_threshold).astype(float)
+        if np.isfinite(learned_threshold) and np.any(threshold_mask > 0):
+            ax2[0].contour(
+                threshold_mask,
+                levels=[0.5],
+                colors="white",
+                linewidths=2.0,
+                origin="lower",
+            )
+            ax2[0].contourf(
+                threshold_mask,
+                levels=[0.5, 1.5],
+                colors="none",
+                hatches=["///"],
+                alpha=0.0,
+                origin="lower",
+            )
 
         for i, tr in enumerate(trajs_ugv):
             arr = np.asarray(tr, dtype=float)
@@ -2473,6 +2509,26 @@ def run_once(
         ax2[1].set_title(f"Std + UAV paths (step={step})")
         plt.colorbar(im1, ax=ax2[1], fraction=0.046, pad=0.04)
 
+        threshold_mask = (mean_map_to_show >= learned_threshold).astype(float)
+
+        if np.isfinite(learned_threshold) and np.any(threshold_mask > 0):
+            ax2[1].contour(
+                threshold_mask,
+                levels=[0.5],
+                colors="white",
+                linewidths=2.0,
+                origin="lower",
+            )
+
+            ax2[1].contourf(
+                threshold_mask,
+                levels=[0.5, 1.5],
+                colors="none",
+                hatches=["///"],
+                alpha=0.0,
+                origin="lower",
+            )
+
         for i, tr in enumerate(trajs_uav):
             arr = np.asarray(tr, dtype=float)
             if arr.ndim == 2 and arr.shape[0] >= 2:
@@ -2499,19 +2555,50 @@ def run_once(
             fontsize=9,
             frameon=True,
         )
-
-        # (3) Ground truth
+                # (3) Prob + threshold region
         im2 = ax2[2].imshow(
+            prob_map_to_show,
+            cmap="jet",
+            origin="lower",
+            vmin=0.0,
+            vmax=1.0
+        )
+        ax2[2].set_title(
+            f"Prob map (step={step})\n"
+            f"theta={threshold_value:.2f}, learned={learned_threshold:.2f}"
+        )
+        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
+
+        threshold_mask = (mean_map_to_show >= learned_threshold).astype(float)
+        if np.isfinite(learned_threshold) and np.any(threshold_mask > 0):
+            ax2[2].contour(
+                threshold_mask,
+                levels=[0.5],
+                colors="white",
+                linewidths=2.0,
+                origin="lower",
+            )
+            ax2[2].contourf(
+                threshold_mask,
+                levels=[0.5, 1.5],
+                colors="none",
+                hatches=["///"],
+                alpha=0.0,
+                origin="lower",
+            )
+
+                # (4) Ground truth
+        im3 = ax2[3].imshow(
             gt,
             cmap=gt_style["cmap"],
             origin="lower",
             vmin=gt_style["vmin"],
             vmax=gt_style["vmax"]
         )
-        ax2[2].set_title(gt_style["title"])
-        cb2 = plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
+        ax2[3].set_title(gt_style["title"])
+        cb3 = plt.colorbar(im3, ax=ax2[3], fraction=0.046, pad=0.04)
         if gt_style["colorbar_ticks"] is not None:
-            cb2.set_ticks(gt_style["colorbar_ticks"])
+            cb3.set_ticks(gt_style["colorbar_ticks"])
 
         fig2.subplots_adjust(bottom=0.23, wspace=0.35)
         fig2.savefig(save_path, dpi=200)
@@ -2726,9 +2813,9 @@ def run_once(
                     harvested_amount = float(gt[yi, xj])
                     harvested_total += harvested_amount
 
-                    # 収穫量 g を教師データとして g -> logit 変換を更新
-                    calibrator.add_sample(harvested_amount)
-                    calibrator.fit_step(n_iter=20)
+                    # # 収穫量 g を教師データとして g -> logit 変換を更新
+                    # calibrator.add_sample(harvested_amount)
+                    # calibrator.fit_step(n_iter=20)
 
                     # 真の環境を更新
                     gt[yi, xj] = 0.0
@@ -2778,6 +2865,95 @@ def run_once(
             im_std.set_data(std_map_to_show)
             im_prob.set_data(prob_map_to_show)
 
+            if std_threshold_contour is not None:
+                for c in std_threshold_contour.collections:
+                    c.remove()
+                std_threshold_contour = None
+
+            if std_threshold_hatch is not None:
+                for c in std_threshold_hatch.collections:
+                    c.remove()
+                std_threshold_hatch = None
+
+            if mean_threshold_contour is not None:
+                for c in mean_threshold_contour.collections:
+                    c.remove()
+                mean_threshold_contour = None
+
+            if mean_threshold_hatch is not None:
+                for c in mean_threshold_hatch.collections:
+                    c.remove()
+                mean_threshold_hatch = None
+
+            if prob_threshold_contour is not None:
+                for c in prob_threshold_contour.collections:
+                    c.remove()
+                prob_threshold_contour = None
+
+            if prob_threshold_hatch is not None:
+                for c in prob_threshold_hatch.collections:
+                    c.remove()
+                prob_threshold_hatch = None
+
+            learned_th = calibrator.learned_threshold
+            threshold_mask = (fused_mean >= learned_th).astype(float)
+
+            if np.isfinite(learned_th) and np.any(threshold_mask > 0):
+                mean_threshold_contour = ax[0].contour(
+                    threshold_mask,
+                    levels=[0.5],
+                    colors="white",
+                    linewidths=2.0,
+                    origin="lower",
+                    zorder=30,
+                )
+                mean_threshold_hatch = ax[0].contourf(
+                    threshold_mask,
+                    levels=[0.5, 1.5],
+                    colors="none",
+                    hatches=["///"],
+                    alpha=0.0,
+                    origin="lower",
+                    zorder=31,
+                )
+                
+                std_threshold_contour = ax[1].contour(
+                    threshold_mask,
+                    levels=[0.5],
+                    colors="white",
+                    linewidths=2.0,
+                    origin="lower",
+                    zorder=30,
+                )
+
+                std_threshold_hatch = ax[1].contourf(
+                    threshold_mask,
+                    levels=[0.5, 1.5],
+                    colors="none",
+                    hatches=["///"],
+                    alpha=0.0,
+                    origin="lower",
+                    zorder=31,
+                )
+
+                prob_threshold_contour = ax[2].contour(
+                    threshold_mask,
+                    levels=[0.5],
+                    colors="white",
+                    linewidths=2.0,
+                    origin="lower",
+                    zorder=30,
+                )
+                prob_threshold_hatch = ax[2].contourf(
+                    threshold_mask,
+                    levels=[0.5, 1.5],
+                    colors="none",
+                    hatches=["///"],
+                    alpha=0.0,
+                    origin="lower",
+                    zorder=31,
+                )
+
             for i, uav in enumerate(uavs):
                 trajs_uav[i].append(uav.pos.copy())
                 pu = np.array(trajs_uav[i])
@@ -2811,7 +2987,10 @@ def run_once(
 
             ax[0].set_title(f"[RUN {run_idx}] Step {step} Mean")
             ax[1].set_title(f"[RUN {run_idx}] Step {step} Std")
-            ax[2].set_title(f"[RUN {run_idx}] Step {step} Prob")
+            ax[2].set_title(
+                f"[RUN {run_idx}] Step {step} Prob\n"
+                f"theta={calibrator.threshold:.2f}, learned={calibrator.learned_threshold:.2f}"
+            )
             ax[3].set_title(f"[RUN {run_idx}] {gt_style_now['title']}")
 
             fig.canvas.draw()
@@ -2839,6 +3018,8 @@ def run_once(
                     run_idx=run_idx,
                     show=False,
                     signal_mode=cfg.signal_mode,
+                    threshold_value=calibrator.threshold,
+                    learned_threshold=calibrator.learned_threshold,
                 )
 
 
@@ -2868,18 +3049,16 @@ def run_once(
         plt.ioff()
 
         gt_style = get_gt_plot_style(final_gt)
-        final_mean_map = final_mean if (cfg.signal_mode == "gp_mean") else fused_prob
+        final_mean_map = final_mean
+        final_prob_map = fused_prob
         final_std_map = compute_std_map(final_var)
 
-        if cfg.signal_mode == "gp_logistic_prob":
-            mean_vmin, mean_vmax = 0.0, 1.0
-            mean_cmap = "jet"
-        else:
-            mean_vmin, mean_vmax = compute_display_limits(final_mean_map, binary=False)
-            mean_cmap = "viridis"
+        mean_vmin = float(np.nanmin(gt_initial))
+        mean_vmax = float(np.nanmax(gt_initial))
+        mean_cmap = "viridis"
 
-        std_vmin, std_vmax = compute_display_limits(final_std_map, binary=False)
-
+        std_vmin = 0.0
+        std_vmax = 1.0
         out_dir_vis = os.path.join(run_root, "final")
         os.makedirs(out_dir_vis, exist_ok=True)
         save_path = os.path.join(
@@ -2887,7 +3066,7 @@ def run_once(
             f"final_maps_{scenario_id}_seed{master_seed}_run{run_idx}.png"
         )
 
-        fig2, ax2 = plt.subplots(1, 3, figsize=(18, 5))
+        fig2, ax2 = plt.subplots(1, 4, figsize=(24, 5))
         for a in ax2:
             a.set_aspect("equal")
             a.set_xlim(0, grid_size - 1)
@@ -2900,7 +3079,23 @@ def run_once(
         else:
             ax2[0].imshow(final_gt, cmap="gray", origin="lower", alpha=0.18)
         ax2[0].set_title("Final mean/prob + UGV paths")
-        plt.colorbar(im0, ax=ax2[0], fraction=0.046, pad=0.04)
+        threshold_mask = (final_mean_map >= calibrator.learned_threshold).astype(float)
+        if np.isfinite(calibrator.learned_threshold) and np.any(threshold_mask > 0):
+            ax2[0].contour(
+                threshold_mask,
+                levels=[0.5],
+                colors="white",
+                linewidths=2.0,
+                origin="lower",
+            )
+            ax2[0].contourf(
+                threshold_mask,
+                levels=[0.5, 1.5],
+                colors="none",
+                hatches=["///"],
+                alpha=0.0,
+                origin="lower",
+            )
 
         for i, tr in enumerate(trajs_ugv):
             arr = np.asarray(tr, dtype=float)
@@ -2938,6 +3133,26 @@ def run_once(
         ax2[1].set_title("Final std + UAV paths")
         plt.colorbar(im1, ax=ax2[1], fraction=0.046, pad=0.04)
 
+        threshold_mask = (final_mean_map >= calibrator.learned_threshold).astype(float)
+
+        if np.isfinite(calibrator.learned_threshold) and np.any(threshold_mask > 0):
+            ax2[1].contour(
+                threshold_mask,
+                levels=[0.5],
+                colors="white",
+                linewidths=2.0,
+                origin="lower",
+            )
+
+            ax2[1].contourf(
+                threshold_mask,
+                levels=[0.5, 1.5],
+                colors="none",
+                hatches=["///"],
+                alpha=0.0,
+                origin="lower",
+            )
+
         for i, tr in enumerate(trajs_uav):
             arr = np.asarray(tr, dtype=float)
             if arr.ndim == 2 and arr.shape[0] >= 2:
@@ -2965,18 +3180,50 @@ def run_once(
             frameon=True,
         )
 
-        # (3) GT
+        # (3) Prob + threshold region
         im2 = ax2[2].imshow(
+            final_prob_map,
+            cmap="jet",
+            origin="lower",
+            vmin=0.0,
+            vmax=1.0
+        )
+        ax2[2].set_title(
+            f"Final prob\n"
+            f"theta={calibrator.threshold:.2f}, learned={calibrator.learned_threshold:.2f}"
+        )
+        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
+
+        threshold_mask = (final_mean_map >= calibrator.learned_threshold).astype(float)
+        if np.isfinite(calibrator.learned_threshold) and np.any(threshold_mask > 0):
+            ax2[2].contour(
+                threshold_mask,
+                levels=[0.5],
+                colors="white",
+                linewidths=2.0,
+                origin="lower",
+            )
+            ax2[2].contourf(
+                threshold_mask,
+                levels=[0.5, 1.5],
+                colors="none",
+                hatches=["///"],
+                alpha=0.0,
+                origin="lower",
+            )
+
+        # (4) GT
+        im3 = ax2[3].imshow(
             final_gt,
             cmap=gt_style["cmap"],
             origin="lower",
             vmin=gt_style["vmin"],
             vmax=gt_style["vmax"]
         )
-        ax2[2].set_title(gt_style["title"])
-        cb2 = plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
+        ax2[3].set_title(gt_style["title"])
+        cb3 = plt.colorbar(im3, ax=ax2[3], fraction=0.046, pad=0.04)
         if gt_style["colorbar_ticks"] is not None:
-            cb2.set_ticks(gt_style["colorbar_ticks"])
+            cb3.set_ticks(gt_style["colorbar_ticks"])
 
         fig2.subplots_adjust(bottom=0.23, wspace=0.35)
         fig2.savefig(save_path, dpi=200)
