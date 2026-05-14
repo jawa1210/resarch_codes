@@ -318,7 +318,7 @@ class HarvestLogitCalibrator:
     def sigmoid(z):
         z = np.clip(z, -40.0, 40.0)
         return 1.0 / (1.0 + np.exp(-z))
-    
+
     @property
     def learned_threshold(self):
         if abs(self.w) < 1e-12:
@@ -409,7 +409,7 @@ class SparseOnlineGP:
         self.C = np.array([[-1.0 / denom]])
         self.Q = np.array([[1.0 / k00]])
 
-    def update(self, x: np.ndarray, y: float):
+    def update(self, x: np.ndarray, y: float, delta_override: Optional[float] = None):
         if self.X.shape[0] == 0:
             self.init_first(x, y)
             return
@@ -428,7 +428,9 @@ class SparseOnlineGP:
 
         n = self.X.shape[0]
 
-        if h_t < self.delta:
+        delta_use = self.delta if delta_override is None else float(delta_override)
+
+        if h_t < delta_use:
             ehat = self.Q.dot(k_vec)
             s_short = self.C.dot(k_vec) + ehat
             self.a += q_t * s_short
@@ -1217,6 +1219,10 @@ class UAVConfig:
 
     ugv_move_period: int = 1
 
+    use_local_sogp_delta: bool = False
+    local_sogp_radius: float = 5.0
+    local_sogp_delta_scale: float = 0.3
+
 
 # ============================================================
 # 5) UAV Controller
@@ -1503,6 +1509,32 @@ class UAVController:
         )
 
         return xi1, xi2, float(I_tilde)
+
+        def _delta_for_observation(self, p_i: np.ndarray) -> float:
+            """
+            UGV近傍では SOGP の novelty threshold delta を小さくする。
+            deltaを小さくすると、case2に吸収されにくくなり、
+            case1/case3としてbasis化されやすくなる。
+            """
+            cfg = self.cfg
+
+            if not cfg.use_local_sogp_delta:
+                return float(self.gp.delta)
+
+            if self.ugv_fleet is None or len(self.ugv_fleet.ugvs) == 0:
+                return float(self.gp.delta)
+
+            p = np.asarray(p_i, dtype=float)
+
+            min_dist = min(
+                float(np.linalg.norm(p - ugv.position.astype(float)))
+                for ugv in self.ugv_fleet.ugvs
+            )
+
+            if min_dist <= cfg.local_sogp_radius:
+                return float(self.gp.delta) * float(cfg.local_sogp_delta_scale)
+
+            return float(self.gp.delta)
 
 
 
@@ -1835,7 +1867,9 @@ class UAVController:
 
             # GP更新（obs_list を使い回す）
             for p_i, y_i in obs_list:
-                self.gp.update(np.asarray(p_i, dtype=float), float(y_i))
+                p_i = np.asarray(p_i, dtype=float)
+                delta_use = self._delta_for_observation(p_i)
+                self.gp.update(p_i, float(y_i), delta_override=delta_use)
 
             self._sample_count += 1
             self._cached_mean_map, self._cached_var_map, self._cached_prob_map = self.get_map_estimates()
@@ -3474,6 +3508,10 @@ def build_cfg_from_params(params: dict) -> UAVConfig:
         wp_power=float(deep_get(params, "cfg.wp_power", 1.0)),
 
         ugv_move_period=int(deep_get(params, "cfg.ugv_move_period", 5)),
+
+        use_local_sogp_delta=bool(deep_get(params, "cfg.use_local_sogp_delta", False)),
+        local_sogp_radius=float(deep_get(params, "cfg.local_sogp_radius", 5.0)),
+        local_sogp_delta_scale=float(deep_get(params, "cfg.local_sogp_delta_scale", 0.3)),
     )
     return cfg
 

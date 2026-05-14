@@ -83,6 +83,10 @@ cfg:
 
   ugv_move_period: 10
 
+  use_local_sogp_delta: true
+  local_sogp_radius: 7.0
+  local_sogp_delta_scale: 0.1
+
 calibrator:
   threshold: 4.0
   init_w: 1.0
