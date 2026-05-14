@@ -397,6 +397,10 @@ class SparseOnlineGP:
         self.C = np.zeros((0, 0))
         self.Q = np.zeros((0, 0))
 
+        self.count_case1 = 0
+        self.count_case2 = 0
+        self.count_case3 = 0
+
     def init_first(self, x, y):
         k00 = self.kernel(x, x)
         denom = k00 + self.sigma0 ** 2
@@ -2354,6 +2358,21 @@ def run_once(
     ugv_log = {"step": []}
     fixed_std_range_initialized = False
 
+    sogp_log = {"step": []}
+
+    for i in range(num_uavs):
+        sogp_log[f"uav{i}_basis"] = []
+        sogp_log[f"uav{i}_case1"] = []
+        sogp_log[f"uav{i}_case2"] = []
+        sogp_log[f"uav{i}_case3"] = []
+        sogp_log[f"uav{i}_sparse_ratio"] = []
+
+    sogp_log["basis_total"] = []
+    sogp_log["case1_total"] = []
+    sogp_log["case2_total"] = []
+    sogp_log["case3_total"] = []
+    sogp_log["sparse_ratio_total"] = []
+
     def _ensure_ugv_cols(k: int):
         base_cols = [
             f"ugv{k}_y", f"ugv{k}_x",
@@ -2817,6 +2836,41 @@ def run_once(
             env_fn = (lambda p, _gt=gt, _ns=noise_std, _rng=rng:
                       environment_function(p, _gt, rng=_rng, noise_std=_ns))
             uav.calc(env_fn, fused_amb=fused_amb, fused_var=fused_var, step=step)
+        sogp_log["step"].append(step)
+
+        case1_total = 0
+        case2_total = 0
+        case3_total = 0
+        basis_total = 0
+
+        for i, uav in enumerate(uavs):
+            c1 = int(uav.gp.count_case1)
+            c2 = int(uav.gp.count_case2)
+            c3 = int(uav.gp.count_case3)
+            b = int(uav.gp.X.shape[0])
+
+            denom = c1 + c2 + c3
+            sparse_ratio = c2 / denom if denom > 0 else 0.0
+
+            sogp_log[f"uav{i}_basis"].append(b)
+            sogp_log[f"uav{i}_case1"].append(c1)
+            sogp_log[f"uav{i}_case2"].append(c2)
+            sogp_log[f"uav{i}_case3"].append(c3)
+            sogp_log[f"uav{i}_sparse_ratio"].append(sparse_ratio)
+
+            case1_total += c1
+            case2_total += c2
+            case3_total += c3
+            basis_total += b
+
+        denom_total = case1_total + case2_total + case3_total
+        sogp_log["basis_total"].append(basis_total)
+        sogp_log["case1_total"].append(case1_total)
+        sogp_log["case2_total"].append(case2_total)
+        sogp_log["case3_total"].append(case3_total)
+        sogp_log["sparse_ratio_total"].append(
+            case2_total / denom_total if denom_total > 0 else 0.0
+        )
 
         ugv_period = max(int(cfg.ugv_move_period), 1)
         if (step % ugv_period) == 0:
@@ -3290,6 +3344,10 @@ def run_once(
     df_ugv = pd.DataFrame(ugv_log)
     df_ugv["run_idx"] = run_idx
     df = df.merge(df_ugv, on=["run_idx", "step"], how="left")
+
+    df_sogp = pd.DataFrame(sogp_log)
+    df_sogp["run_idx"] = run_idx
+    df = df.merge(df_sogp, on=["run_idx", "step"], how="left")
 
     gp0 = uavs[0].gp
     params_row = {
