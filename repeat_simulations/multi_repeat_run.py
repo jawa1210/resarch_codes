@@ -1510,7 +1510,7 @@ class UAVController:
 
         return xi1, xi2, float(I_tilde)
 
-        def _delta_for_observation(self, p_i: np.ndarray) -> float:
+    def _delta_for_observation(self, p_i: np.ndarray) -> float:
             """
             UGV近傍では SOGP の novelty threshold delta を小さくする。
             deltaを小さくすると、case2に吸収されにくくなり、
