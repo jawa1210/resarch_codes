@@ -100,9 +100,10 @@ def plot_two_results_files(
         dt: float = 0.1,
         ds: float = 0.5,
         gamma: float | None = 3.0,
-        max_step: int | None = None,     # ★追加: この step まで
-        max_time: float | None = None,   # ★追加: この時間(s)まで（max_stepより優先）
+        max_step: int | None = None,
+        max_time: float | None = None,
         plot_eval: bool = True,
+        plot_sogp_case: bool = True,   # ★追加
     ):
     """
     file2 を None にすると単独ファイルのプロットになる。
@@ -450,6 +451,89 @@ def plot_two_results_files(
             ax.legend()
             plt.tight_layout()
             plt.show()
+        
+    # =====================================================
+    # 4) SOGP case count
+    # =====================================================
+    if plot_sogp_case:
+        case_keys = [
+            ("case1_total", "Case1: 新規basis追加"),
+            ("case2_total", "Case2: 既存basis更新"),
+            ("case3_total", "Case3: basis削除/置換"),
+            ("basis_total", "Basis total"),
+            ("sparse_ratio_total", "Sparse ratio"),
+        ]
+
+        for col, title in case_keys:
+            if col not in df1.columns:
+                print(f"[WARN] file1 に {col} がありません。")
+                continue
+
+            mean1_case = df1.groupby("step")[col].mean().reset_index()
+            t1_case = mean1_case["step"].to_numpy() * dt
+            y1_case = mean1_case[col].to_numpy()
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+
+            for i, r in enumerate(runs1):
+                sub = df1[df1["run"] == r].sort_values("step")
+                if sub.empty:
+                    continue
+
+                t = sub["step"].to_numpy() * dt
+                y = sub[col].to_numpy()
+
+                ax.plot(
+                    t, y,
+                    color=color1,
+                    alpha=0.25,
+                    label=(f"{label1} 各試行" if i == 0 else None),
+                )
+
+            ax.plot(
+                t1_case, y1_case,
+                color=color1,
+                linewidth=3.0,
+                label=f"{label1} 平均",
+            )
+
+            if has_second:
+                if col not in df2.columns:
+                    print(f"[WARN] file2 に {col} がありません。")
+                else:
+                    mean2_case = df2.groupby("step")[col].mean().reset_index()
+                    t2_case = mean2_case["step"].to_numpy() * dt
+                    y2_case = mean2_case[col].to_numpy()
+
+                    for i, r in enumerate(runs2):
+                        sub = df2[df2["run"] == r].sort_values("step")
+                        if sub.empty:
+                            continue
+
+                        t = sub["step"].to_numpy() * dt
+                        y = sub[col].to_numpy()
+
+                        ax.plot(
+                            t, y,
+                            color=color2,
+                            alpha=0.25,
+                            label=(f"{label2} 各試行" if i == 0 else None),
+                        )
+
+                    ax.plot(
+                        t2_case, y2_case,
+                        color=color2,
+                        linewidth=3.0,
+                        label=f"{label2} 平均",
+                    )
+
+            ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
+            ax.set_ylabel(col)
+            ax.set_title(f"{title} の推移")
+            ax.grid(True)
+            ax.legend()
+            plt.tight_layout()
+            plt.show()
 
 
 if __name__ == "__main__":
@@ -466,14 +550,14 @@ if __name__ == "__main__":
     # )
 
     # ② 2条件比較（以前表示）
-    file_B = "gp_logistic_prob_gp_coop_seed1234_data_10runs.csv"
-    file_A = "not_collabo_gp_not_colabb_seed1234_data_10runs.csv"
+    file_A = "not_collabo_not_collab_not_weighted_20_narrow_seed1234_data_20runs.csv"
+    file_B = "gp_logistic_prob_collab_ucb_20_seed1234_data_20runs.csv"
     plot_two_results_files(
         file_A, file_B,
         label1="条件A",
         label2="条件B",
         dt=0.1,
         ds=0.5,
-        gamma=8.0,
+        gamma=6.0,
         plot_eval=True,   # Falseにすれば評価plotをOFF
-    )
+        plot_sogp_case=True,)  # FalseにすればSOGP case plotをOFF

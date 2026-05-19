@@ -379,8 +379,7 @@ class HarvestLogitCalibrator:
 # ============================================================
 
 def rbf_kernel(x, y, rbf_sigma=2.0):
-    sigma_f2=3**2
-    return sigma_f2*np.exp(-np.linalg.norm(x - y) ** 2 / (2 * rbf_sigma ** 2))
+    return np.exp(-np.linalg.norm(x - y) ** 2 / (2 * rbf_sigma ** 2))
 
 
 class SparseOnlineGP:
@@ -635,8 +634,8 @@ def environment_function(pos: np.ndarray, true_map: np.ndarray,
     H, W = true_map.shape
     observations: List[Tuple[np.ndarray, float]] = []
 
-    for di in (0,):
-        for dj in (0,):
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
             i, j = i0 + di, j0 + dj
             if not (0 <= i < H and 0 <= j < W):
                 continue
@@ -674,7 +673,7 @@ def generate_ground_truth_map_scalar(
     sigma_range=(2.5, 4.5),
     background=0.05,
     noise_std=0.03,
-    max_value=10.0,
+    max_value=1.0,
     seed=None,
 ):
     rng = np.random.default_rng(seed)

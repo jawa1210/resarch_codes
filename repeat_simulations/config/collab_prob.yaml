@@ -1,5 +1,5 @@
 RESULTS_DIR: results
-RUN_NAME: gp_mean
+RUN_NAME: gp_logistic_prob
 AUTO_INCREMENT: true
 
 grid_size: 30
@@ -10,6 +10,7 @@ steps: 1800
 
 ugv_depth: 7
 reward_type: 6
+ugv_amb_lambda: 5.0
 discount_factor: 0.95
 
 gp_sensing_noise_sigma0: 0.1
@@ -26,8 +27,8 @@ cfg:
 
   #nominal_mode: to_waypoint
   #nominal_mode : to_ugv_future
-  nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
-  #nominal_mode: to_ugv_reachable_best_amb
+  #nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
+  nominal_mode: to_ugv_reachable_best_amb
 
   nominal_hold_steps: 5
 
@@ -59,11 +60,11 @@ cfg:
   cbf_j_alpha: 0.01
   cbf_j_gamma: 6.0
 
-  #signal_mode: gp_logistic_prob
-  signal_mode: gp_mean
+  signal_mode: gp_logistic_prob
+  #signal_mode: gp_mean
 
-  uav_waypoint_signal: gp_var
- # uav_waypoint_signal: prob_ambiguity
+  #uav_waypoint_signal: gp_var
+  uav_waypoint_signal: prob_ambiguity
 
   map_publish_period: 0.5
 
@@ -81,3 +82,14 @@ cfg:
   wp_power: 1.0
 
   ugv_move_period: 10
+
+  use_local_sogp_delta: true
+  local_sogp_radius: 7.0
+  local_sogp_delta_scale: 0.8
+
+calibrator:
+  threshold: 0.7
+  init_w: 1.0
+  lr: 0.03
+  l2: 0.0001
+  min_samples: 20
