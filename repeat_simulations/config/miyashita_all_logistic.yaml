@@ -9,7 +9,7 @@ num_ugvs: 2
 steps: 1800
 
 ugv_depth: 7
-reward_type: 6
+reward_type: 7
 ugv_amb_lambda: 5.0
 discount_factor: 0.95
 
@@ -88,7 +88,7 @@ cfg:
   local_sogp_delta_scale: 0.5
 
 calibrator:
-  threshold: 4.0
+  threshold: 5
   init_w: 1.0
   lr: 0.03
   l2: 0.0001

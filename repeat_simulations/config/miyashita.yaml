@@ -83,8 +83,9 @@ cfg:
 
   ugv_move_period: 10
 
+  use_local_sogp_delta: false
 calibrator:
-  threshold: 4.0
+  threshold: 5.0
   init_w: 1.0
   lr: 0.03
   l2: 0.0001
