@@ -1,5 +1,5 @@
 RESULTS_DIR: results
-RUN_NAME: gp_logistic_prob
+RUN_NAME: collab_all_prob
 AUTO_INCREMENT: true
 
 grid_size: 30
