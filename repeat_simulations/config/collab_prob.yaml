@@ -103,7 +103,7 @@ ground_truth:
   max_value: 1.0
   num_runs: 20
 
-init_position_mode: ugv_left_bottom_uav_right_top_cluster
+init_position_mode: random
 
 init:
   margin: 3
