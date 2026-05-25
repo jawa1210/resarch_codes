@@ -435,7 +435,7 @@ def rbf_kernel(x, y, rbf_sigma=2.0):
 
 
 class SparseOnlineGP:
-    def __init__(self, sigma0: float, kernel=rbf_kernel, max_basis: int = None, delta: float = 0.1):
+    def __init__(self, sigma0: float, kernel=rbf_kernel, max_basis: int = None, delta: float = 0.1, prob_threshold: float = 2.0):
         self.sigma0 = sigma0
         self.kernel = kernel
         self.max_basis = max_basis
@@ -452,6 +452,8 @@ class SparseOnlineGP:
         self.count_case1 = 0
         self.count_case2 = 0
         self.count_case3 = 0
+
+        self.prob_threshold = float(prob_threshold)
 
     def init_first(self, x, y):
         k00 = self.kernel(x, x)
@@ -569,7 +571,8 @@ class SparseOnlineGP:
         mu = float(self.a.dot(k_vec))
         var = float(self.kernel(x, x) + k_vec.dot(self.C.dot(k_vec)))
 
-        z_raw = mu / np.sqrt(1.0 + (np.pi / 8.0) * var)
+        theta=self.prob_threshold
+        z_raw = (mu - theta) / np.sqrt(1.0 + (np.pi / 8.0) * var)
         z = float(1.0 / (1.0 + np.exp(-z_raw)))
         self.var=var
         return mu, var, z, k_vec, self.C
@@ -676,25 +679,45 @@ class SparseOnlineGP:
 # 2) Env / Map utils
 # ============================================================
 
+# def environment_function(pos: np.ndarray, true_map: np.ndarray,
+#                          rng: np.random.Generator,
+#                          noise_std: float = 0.5) -> List[Tuple[np.ndarray, float]]:
+#     """
+#     3×3の観測（中心あり＝9点）。
+#     """
+#     i0, j0 = int(round(pos[0])), int(round(pos[1]))
+#     H, W = true_map.shape
+#     observations: List[Tuple[np.ndarray, float]] = []
+
+#     for di in (-1, 0, 1):
+#         for dj in (-1, 0, 1):
+#             i, j = i0 + di, j0 + dj
+#             if not (0 <= i < H and 0 <= j < W):
+#                 continue
+
+#             val = float(true_map[i, j])
+#             noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
+#             observations.append((np.array([i, j], dtype=float), noisy))
+
+#     return observations
+
 def environment_function(pos: np.ndarray, true_map: np.ndarray,
                          rng: np.random.Generator,
                          noise_std: float = 0.5) -> List[Tuple[np.ndarray, float]]:
     """
-    3×3の観測（中心あり＝9点）。
+    ドローン真下1点のみ観測
     """
     i0, j0 = int(round(pos[0])), int(round(pos[1]))
     H, W = true_map.shape
     observations: List[Tuple[np.ndarray, float]] = []
 
-    for di in (-1, 0, 1):
-        for dj in (-1, 0, 1):
-            i, j = i0 + di, j0 + dj
-            if not (0 <= i < H and 0 <= j < W):
-                continue
+    if 0 <= i0 < H and 0 <= j0 < W:
+        val = float(true_map[i0, j0])
+        noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
 
-            val = float(true_map[i, j])
-            noisy = float(val + rng.normal(loc=0.0, scale=noise_std))
-            observations.append((np.array([i, j], dtype=float), noisy))
+        observations.append(
+            (np.array([i0, j0], dtype=float), noisy)
+        )
 
     return observations
 
@@ -1293,7 +1316,8 @@ class UAVController:
         gp_sensing_noise_sigma0: float = 0.4,
         gp_max_basis: int = 100,
         gp_threshold_delta: float = 0.05,
-        rbf_sigma: float = 2.0
+        rbf_sigma: float = 2.0,
+        prob_threshold: float = 2.0
     ):
         self.cfg = cfg
         self.uav_id = uav_id
@@ -1314,7 +1338,8 @@ class UAVController:
             sigma0=gp_sensing_noise_sigma0,
             kernel=lambda x, y, s=rbf_sigma: rbf_kernel(x, y, s),
             max_basis=gp_max_basis,
-            delta=gp_threshold_delta
+            delta=gp_threshold_delta,
+            prob_threshold=prob_threshold
         )
 
         for x, y in zip(train_data_x, train_data_y):
@@ -1868,15 +1893,26 @@ class UAVController:
 
         if cfg.nominal_mode == "to_ugv_future_if_in_voronoi_else_waypoint":
             ugv_idx = self._find_ugv_in_my_voronoi()
-            if ugv_idx is None:
-                return -cfg.k_pp * (self.pos - waypoint)
-            # ここでは fleet の planned_path から future を取るので
-            cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
-            ugv_future = np.array([cy, cx], dtype=float)
-            self.current_chase_point = ugv_future.copy()
-            return -cfg.k_ugv * (self.pos - ugv_future)
 
-        return -cfg.k_pp * (self.pos - waypoint)
+            if ugv_idx is None:
+                self.current_chase_point = None
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            path = self.ugv_fleet.planned_paths[ugv_idx] if ugv_idx < len(self.ugv_fleet.planned_paths) else []
+
+            if path:
+                idx = min(max(cfg.step_of_ugv_path_used - 1, 0), len(path) - 1)
+                cy, cx = path[idx]
+            else:
+                cy, cx = self.ugv_fleet.ugvs[ugv_idx].position
+
+            ugv_future = np.array([cy, cx], dtype=float)
+
+            # 表示用：X印をfuture pointに出す
+            self.current_chase_point = ugv_future.copy()
+
+            # 制御もfuture pointへ向かう
+            return -cfg.k_ugv * (self.pos - ugv_future)
 
     def _find_ugv_in_my_voronoi(self) -> Optional[int]:
         if (self._voronoi_mask is None) or (not self.cfg.use_voronoi):
@@ -2303,7 +2339,8 @@ def run_once(
             gp_sensing_noise_sigma0=gp_sensing_noise_sigma0,
             gp_max_basis=gp_max_basis,
             gp_threshold_delta=gp_threshold_delta,
-            rbf_sigma=rbf_sigma
+            rbf_sigma=rbf_sigma,
+            prob_threshold=float(deep_get(params, "calibrator.threshold", 2.0))
         )
         uav.pos = p0.astype(float)
         uavs.append(uav)

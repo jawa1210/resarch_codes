@@ -1,5 +1,5 @@
 RESULTS_DIR: results
-RUN_NAME: not_collabo
+RUN_NAME: not_collabo_prob
 AUTO_INCREMENT: true
 
 grid_size: 30
@@ -84,7 +84,7 @@ cfg:
   ugv_move_period: 10
 
 calibrator:
-  threshold: 4.0
+  threshold: 0.7
   init_w: 1.0
   lr: 0.03
   l2: 0.0001

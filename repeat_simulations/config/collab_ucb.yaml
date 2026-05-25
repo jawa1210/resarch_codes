@@ -1,5 +1,5 @@
 RESULTS_DIR: results
-RUN_NAME: collab_all_prob
+RUN_NAME: collab_ugv_future
 AUTO_INCREMENT: true
 
 grid_size: 30
@@ -27,8 +27,8 @@ cfg:
 
   #nominal_mode: to_waypoint
   #nominal_mode : to_ugv_future
-  #nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
-  nominal_mode: to_ugv_reachable_best_amb
+  nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
+  #nominal_mode: to_ugv_reachable_best_amb
 
   nominal_hold_steps: 5
 
@@ -60,11 +60,11 @@ cfg:
   cbf_j_alpha: 0.01
   cbf_j_gamma: 6.0
 
-  signal_mode: gp_logistic_prob
-  #signal_mode: gp_mean
+  #signal_mode: gp_logistic_prob
+  signal_mode: gp_mean
 
-  #uav_waypoint_signal: gp_var
-  uav_waypoint_signal: prob_ambiguity
+  uav_waypoint_signal: gp_var
+  #uav_waypoint_signal: prob_ambiguity
 
   map_publish_period: 0.5
 
@@ -93,18 +93,3 @@ calibrator:
   lr: 0.03
   l2: 0.0001
   min_samples: 20
-
-ground_truth:
-  num_blobs: 100
-  amp_range: [1.0, 3.0]
-  sigma_range: [0.8, 1.8]
-  background: 0.02
-  noise_std: 0.02
-  max_value: 1.0
-  num_runs: 20
-
-init_position_mode: ugv_left_bottom_uav_right_top_cluster
-
-init:
-  margin: 3
-  spacing: 5
