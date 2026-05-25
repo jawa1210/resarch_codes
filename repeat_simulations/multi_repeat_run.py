@@ -197,6 +197,58 @@ def sample_initial_positions(
 
     return np.array(uav_init, dtype=float), np.array(ugv_init, dtype=float)
 
+def apply_initial_position_mode(
+    uav_init: np.ndarray,
+    ugv_init: np.ndarray,
+    grid_size: int,
+    params: dict,
+):
+    mode = str(deep_get(params, "init_position_mode", "random"))
+
+    if mode == "random":
+        return uav_init, ugv_init
+
+    margin = int(deep_get(params, "init.margin", 2))
+    spacing = int(deep_get(params, "init.spacing", 4))
+
+    if mode == "ugv_left_bottom_uav_right_top_cluster":
+
+        fixed_ugv = []
+
+        # =====================================================
+        # UGV群: 左辺の下側
+        # =====================================================
+        for k in range(ugv_init.shape[0]):
+
+            y = margin + k * spacing
+            x = 0
+
+            fixed_ugv.append(
+                np.array([y, x], dtype=float)
+            )
+
+        ugv_init = np.array(fixed_ugv, dtype=float)
+
+        fixed_uav = []
+
+        # =====================================================
+        # UAV群: 右辺の上側
+        # =====================================================
+        for k in range(uav_init.shape[0]):
+
+            y = grid_size - 1 - margin - k * spacing
+            x = grid_size - 1
+
+            fixed_uav.append(
+                np.array([y, x], dtype=float)
+            )
+
+        uav_init = np.array(fixed_uav, dtype=float)
+
+        return uav_init, ugv_init
+
+    raise ValueError(f"Unknown init_position_mode: {mode}")
+
 
 # ============================================================
 # 0) QP Solver (CBF)
@@ -2168,13 +2220,36 @@ def run_once(
     # reproducible RNG per run
     rng = make_rng(master_seed, scenario_id, run_idx, grid_size, num_uavs, num_ugvs)
 
-    uav_init, ugv_init = sample_initial_positions(rng, grid_size, num_uavs, num_ugvs)
+    uav_init, ugv_init = sample_initial_positions(
+        rng,
+        grid_size,
+        num_uavs,
+        num_ugvs
+    )
+
+    uav_init, ugv_init = apply_initial_position_mode(
+        uav_init=uav_init,
+        ugv_init=ugv_init,
+        grid_size=grid_size,
+        params=params,
+    )
 
     print(f"[RUN {run_idx}] init_uav={uav_init.tolist()} init_ugv={ugv_init.tolist()}")
 
     #gt = generate_ground_truth_map(grid_size)
     gt_seed = _stable_int_seed(master_seed, run_idx, grid_size, num_uavs, num_ugvs, "gt")
-    gt = generate_ground_truth_map_scalar(grid_size, seed=gt_seed, num_blobs=20)
+    gt_params = deep_get(params, "ground_truth", {})
+
+    gt = generate_ground_truth_map_scalar(
+        grid_size=grid_size,
+        seed=gt_seed,
+        num_blobs=int(gt_params.get("num_blobs", 30)),
+        amp_range=tuple(gt_params.get("amp_range", [1.0, 2.5])),
+        sigma_range=tuple(gt_params.get("sigma_range", [1.0, 2.2])),
+        background=float(gt_params.get("background", 0.03)),
+        noise_std=float(gt_params.get("noise_std", 0.02)),
+        max_value=float(gt_params.get("max_value", 1.0)),
+    )
 
     # --- dynamic harvest states ---
     gt_initial = gt.copy()  # 評価・可視化用に元GTを保存したいなら残す

@@ -89,3 +89,18 @@ calibrator:
   lr: 0.03
   l2: 0.0001
   min_samples: 20
+
+ground_truth:
+  num_blobs: 100
+  amp_range: [1.0, 3.0]
+  sigma_range: [0.8, 1.8]
+  background: 0.02
+  noise_std: 0.02
+  max_value: 1.0
+  num_runs: 20
+
+init_position_mode: ugv_left_bottom_uav_right_top_cluster
+
+init:
+  margin: 3
+  spacing: 5

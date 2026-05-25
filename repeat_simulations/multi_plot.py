@@ -5,6 +5,7 @@ import japanize_matplotlib  # noqa: F401
 import os
 import numpy as np
 import matplotlib.patheffects as pe
+import hashlib
 
 # ── フォント設定 ────────────────────────────────
 mpl.rcParams['font.family']        = 'IPAexGothic'
@@ -68,6 +69,19 @@ def _load_num_uavs_from_param(param_path: str) -> int | None:
         print(f"[WARN] パラメータファイル読み込み失敗: {param_path} -> {e}")
         return None
 
+def _load_threshold_from_param(param_path: str, default: float = 0.7) -> float:
+    try:
+        dfp = pd.read_csv(param_path)
+        if "calibrator_threshold" in dfp.columns:
+            th = float(dfp["calibrator_threshold"].iloc[0])
+            print(f"[INFO] {param_path} から threshold = {th} を取得しました。")
+            return th
+    except Exception as e:
+        print(f"[WARN] threshold 読み込み失敗: {e}")
+
+    print(f"[WARN] threshold が読めないので default={default} を使います。")
+    return default
+
 
 def _sanitize_df(df: pd.DataFrame, name: str) -> pd.DataFrame:
     """
@@ -91,6 +105,91 @@ def _sanitize_df(df: pd.DataFrame, name: str) -> pd.DataFrame:
         )
     return df
 
+def generate_ground_truth_map_scalar(
+    grid_size=20,
+    num_blobs=4,
+    amp_range=(1.0, 1.5),
+    sigma_range=(2.5, 4.5),
+    background=0.05,
+    noise_std=0.03,
+    max_value=1.0,
+    seed=None,
+):
+    rng = np.random.default_rng(seed)
+
+    H = W = grid_size
+    I, J = np.indices((H, W))
+    gt = np.full((H, W), background, dtype=float)
+
+    for _ in range(num_blobs):
+        cy = rng.uniform(0, H - 1)
+        cx = rng.uniform(0, W - 1)
+        amp = rng.uniform(*amp_range)
+        sig = rng.uniform(*sigma_range)
+
+        dist2 = (I - cy) ** 2 + (J - cx) ** 2
+        gt += amp * np.exp(-dist2 / (2.0 * sig ** 2))
+
+    gt += rng.normal(0.0, noise_std, size=(H, W))
+    gt = np.clip(gt, 0.0, None)
+
+    m = float(gt.max())
+    if m > 1e-12:
+        gt = gt / m * max_value
+
+    return gt
+
+def _stable_int_seed(*items) -> int:
+    s = "|".join(map(str, items)).encode("utf-8")
+    h = hashlib.sha256(s).hexdigest()
+    return int(h[:8], 16)
+
+
+def compute_gt_stats_from_params(
+    params_csv_path: str,
+    threshold: float | None = None,
+):
+    dfp = pd.read_csv(params_csv_path)
+
+    rows = []
+
+    for _, row in dfp.iterrows():
+        run_idx = int(row["run_idx"])
+        master_seed = int(row["master_seed"])
+        grid_size = int(row["grid_size"])
+        num_uavs = int(row["num_uavs"])
+        num_ugvs = int(row["num_ugvs"])
+
+        th = float(row["calibrator_threshold"]) if threshold is None else float(threshold)
+
+        gt_seed = _stable_int_seed(
+            master_seed, run_idx, grid_size, num_uavs, num_ugvs, "gt"
+        )
+
+        gt = generate_ground_truth_map_scalar(
+            grid_size=grid_size,
+            seed=gt_seed,
+            num_blobs=20,   # 本体コードと一致
+        )
+
+        rows.append({
+            "run_idx": run_idx,
+            "gt_seed": gt_seed,
+            "gt_sum": float(np.sum(gt)),
+            "gt_count_ge_threshold": int(np.sum(gt >= th)),
+            "gt_sum_ge_threshold": float(np.sum(gt[gt >= th])),
+            "threshold": th,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def infer_params_path_from_data_path(data_path: str) -> str | None:
+    cand = data_path.replace("_data_", "_params_")
+    if os.path.exists(cand):
+        return cand
+    return None
+
 
 def plot_two_results_files(
         file1: str,
@@ -103,7 +202,9 @@ def plot_two_results_files(
         max_step: int | None = None,
         max_time: float | None = None,
         plot_eval: bool = True,
-        plot_sogp_case: bool = True,   # ★追加
+        plot_sogp_case: bool = True,
+        plot_threshold_count: bool = True,
+        threshold: float | None = None,
     ):
     """
     file2 を None にすると単独ファイルのプロットになる。
@@ -117,6 +218,23 @@ def plot_two_results_files(
     # ── CSV 読み込み ───────────────────────────
     df1_raw = pd.read_csv(file1)
     df1 = _sanitize_df(df1_raw, "file1")
+
+    # =====================================================
+    # GT情報をparams CSVから自動再生成して結合
+    # =====================================================
+    param1 = infer_params_path_from_data_path(file1)
+    if param1 is not None:
+        gt_stats1 = compute_gt_stats_from_params(param1, threshold=threshold)
+        df1 = df1.merge(
+            gt_stats1,
+            left_on="run",
+            right_on="run_idx",
+            how="left",
+            suffixes=("", "_gt")
+        )
+        print("[INFO] file1 に gt_sum / gt_count_ge_threshold を追加しました。")
+    else:
+        print(f"[WARN] file1 の params CSV が見つかりません: {file1}")
 
     # ── 表示区間のカット ─────────────────────────
     if max_time is not None:
@@ -137,6 +255,20 @@ def plot_two_results_files(
         df2_raw = pd.read_csv(file2)
         df2 = _sanitize_df(df2_raw, "file2")
 
+        param2 = infer_params_path_from_data_path(file2)
+        if param2 is not None:
+            gt_stats2 = compute_gt_stats_from_params(param2, threshold=threshold)
+            df2 = df2.merge(
+                gt_stats2,
+                left_on="run",
+                right_on="run_idx",
+                how="left",
+                suffixes=("", "_gt")
+            )
+            print("[INFO] file2 に gt_sum / gt_count_ge_threshold を追加しました。")
+        else:
+            print(f"[WARN] file2 の params CSV が見つかりません: {file2}")
+
         if label2 is None:
             label2 = _nice_label_from_path(file2)
 
@@ -150,6 +282,44 @@ def plot_two_results_files(
     if has_second:
         runs2 = sorted(df2["run"].unique())
         print(f"{label2}: runs = {runs2}")
+
+    # =====================================================
+    # Harvest ratio summary
+    # =====================================================
+    def print_harvest_ratio_summary(df, label):
+        if "gt_sum" not in df.columns:
+            print(f"[WARN] {label}: gt_sum がないため収穫率を計算できません。")
+            return
+
+        final_crop = (
+            df.sort_values("step")
+              .groupby("run")["true_crop_sum"]
+              .last()
+        )
+
+        gt_sum = df.groupby("run")["gt_sum"].first()
+        count_ge = df.groupby("run")["gt_count_ge_threshold"].first()
+        gt_sum_ge = df.groupby("run")["gt_sum_ge_threshold"].first()
+
+        ratio = 100.0 * final_crop / gt_sum
+
+        print("\n" + "=" * 70)
+        print(f"{label}: Harvest ratio summary")
+        print("=" * 70)
+        print(f"収穫量 / GT真値合計 平均: {ratio.mean():.2f}%")
+        print(f"収穫量 / GT真値合計 最小: {ratio.min():.2f}%")
+        print(f"収穫量 / GT真値合計 最大: {ratio.max():.2f}%")
+        print(f"GT真値合計 平均: {gt_sum.mean():.3f}")
+        print(f"閾値以上マス数 平均: {count_ge.mean():.3f}")
+
+        print(f"閾値以上セル真値合計 平均: {gt_sum_ge.mean():.3f}")
+        print(f"閾値以上セル真値合計 最小: {gt_sum_ge.min():.3f}")
+        print(f"閾値以上セル真値合計 最大: {gt_sum_ge.max():.3f}")
+
+    print_harvest_ratio_summary(df1, label1)
+
+    if has_second:
+        print_harvest_ratio_summary(df2, label2)
 
     # ── 平均曲線（step ごと）─────────────────────
     mean1 = df1.groupby("step")[["J", "true_crop_sum"]].mean().reset_index()
@@ -451,7 +621,116 @@ def plot_two_results_files(
             ax.legend()
             plt.tight_layout()
             plt.show()
-        
+
+    # =====================================================
+    # 4) UGV threshold passing count
+    # =====================================================
+    if plot_threshold_count:
+        param_path = _infer_param_file(file1)
+        th = threshold
+        if th is None:
+            th = _load_threshold_from_param(param_path, default=0.7) if param_path is not None else 0.7
+
+        def add_threshold_count(df: pd.DataFrame, name: str) -> pd.DataFrame | None:
+            df = df.copy()
+
+            # UGVが実際に次に踏んだセルの真値
+            target_cols = [
+                c for c in df.columns
+                if c.startswith("ugv") and c.endswith("_target_true")
+            ]
+
+            if len(target_cols) == 0:
+                print(f"[WARN] {name}: ugv*_target_true 列がありません。")
+                print("       シミュレーション側で ugv0_target_true, ugv1_target_true を保存してください。")
+                return None
+
+            # そのstepで threshold 以上を踏んだUGV数
+            df["threshold_hit_step"] = (df[target_cols] >= th).sum(axis=1)
+
+            # runごとに累積
+            df = df.sort_values(["run", "step"])
+            df["threshold_hit_cumsum"] = (
+                df.groupby("run")["threshold_hit_step"].cumsum()
+            )
+
+            return df
+
+        df1_hit = add_threshold_count(df1, "file1")
+
+        if df1_hit is not None:
+            fig, ax = plt.subplots(figsize=(10, 6))
+
+            for i, r in enumerate(runs1):
+                sub = df1_hit[df1_hit["run"] == r].sort_values("step")
+                if sub.empty:
+                    continue
+
+                t = sub["step"].to_numpy() * dt
+                y = sub["threshold_hit_cumsum"].to_numpy()
+
+                ax.plot(
+                    t, y,
+                    color=color1,
+                    alpha=0.25,
+                    label=(f"{label1} 各試行" if i == 0 else None),
+                )
+
+            mean1_hit = (
+                df1_hit.groupby("step")["threshold_hit_cumsum"]
+                .mean()
+                .reset_index()
+            )
+
+            ax.plot(
+                mean1_hit["step"].to_numpy() * dt,
+                mean1_hit["threshold_hit_cumsum"].to_numpy(),
+                color=color1,
+                linewidth=3.0,
+                label=f"{label1} 平均",
+            )
+
+            if has_second:
+                df2_hit = add_threshold_count(df2, "file2")
+
+                if df2_hit is not None:
+                    for i, r in enumerate(runs2):
+                        sub = df2_hit[df2_hit["run"] == r].sort_values("step")
+                        if sub.empty:
+                            continue
+
+                        t = sub["step"].to_numpy() * dt
+                        y = sub["threshold_hit_cumsum"].to_numpy()
+
+                        ax.plot(
+                            t, y,
+                            color=color2,
+                            alpha=0.25,
+                            label=(f"{label2} 各試行" if i == 0 else None),
+                        )
+
+                    mean2_hit = (
+                        df2_hit.groupby("step")["threshold_hit_cumsum"]
+                        .mean()
+                        .reset_index()
+                    )
+
+                    ax.plot(
+                        mean2_hit["step"].to_numpy() * dt,
+                        mean2_hit["threshold_hit_cumsum"].to_numpy(),
+                        color=color2,
+                        linewidth=3.0,
+                        label=f"{label2} 平均",
+                    )
+
+            ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
+            ax.set_ylabel(f"閾値以上セル通過回数の累積")
+            ax.set_title(rf"UGVが真値 $\geq {th:.2f}$ のセルを通った累積回数")
+            ax.grid(True)
+            ax.legend()
+            plt.tight_layout()
+            plt.show()
+
     # =====================================================
     # 4) SOGP case count
     # =====================================================
