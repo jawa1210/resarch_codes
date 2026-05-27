@@ -435,7 +435,7 @@ def rbf_kernel(x, y, rbf_sigma=2.0):
 
 
 class SparseOnlineGP:
-    def __init__(self, sigma0: float, kernel=rbf_kernel, max_basis: int = None, delta: float = 0.1, prob_threshold: float = 2.0):
+    def __init__(self, sigma0: float, kernel=rbf_kernel, max_basis: int = None, delta: float = 0.1, prob_threshold: float = 2.0, prior_mean: float = 0.0,):
         self.sigma0 = sigma0
         self.kernel = kernel
         self.max_basis = max_basis
@@ -454,12 +454,13 @@ class SparseOnlineGP:
         self.count_case3 = 0
 
         self.prob_threshold = float(prob_threshold)
+        self.prior_mean = float(prior_mean)
 
     def init_first(self, x, y):
         k00 = self.kernel(x, x)
         denom = k00 + self.sigma0 ** 2
         self.X = x.reshape(1, 2)
-        self.a = np.array([y / denom])
+        self.a = np.array([(y - self.prior_mean) / denom])
         self.C = np.array([[-1.0 / denom]])
         self.Q = np.array([[1.0 / k00]])
 
@@ -470,7 +471,7 @@ class SparseOnlineGP:
 
         k_vec = np.array([self.kernel(xi, x) for xi in self.X])  # (N,)
         k_tt = self.kernel(x, x)
-        f_star = float(self.a.dot(k_vec))
+        f_star = float(self.prior_mean + self.a.dot(k_vec))
         var_star = float(k_tt + k_vec.dot(self.C.dot(k_vec)))
 
         denom = var_star + self.sigma0 ** 2
@@ -562,13 +563,13 @@ class SparseOnlineGP:
         return: mu, var, logistic_prob, k_vec, C
         """
         if self.X.shape[0] == 0:
-            mu = 0.0
+            mu = self.prior_mean
             var = float(self.kernel(x, x))
             z = 0.5
             return mu, var, z, np.zeros(0), np.zeros((0, 0))
 
         k_vec = np.array([self.kernel(xi, x) for xi in self.X])
-        mu = float(self.a.dot(k_vec))
+        mu = float(self.prior_mean + self.a.dot(k_vec))
         var = float(self.kernel(x, x) + k_vec.dot(self.C.dot(k_vec)))
 
         theta=self.prob_threshold
@@ -1317,7 +1318,8 @@ class UAVController:
         gp_max_basis: int = 100,
         gp_threshold_delta: float = 0.05,
         rbf_sigma: float = 2.0,
-        prob_threshold: float = 2.0
+        prob_threshold: float = 2.0,
+        prior_mean: float = 0.0
     ):
         self.cfg = cfg
         self.uav_id = uav_id
@@ -1339,7 +1341,8 @@ class UAVController:
             kernel=lambda x, y, s=rbf_sigma: rbf_kernel(x, y, s),
             max_basis=gp_max_basis,
             delta=gp_threshold_delta,
-            prob_threshold=prob_threshold
+            prob_threshold=prob_threshold,
+            prior_mean=prior_mean,
         )
 
         for x, y in zip(train_data_x, train_data_y):
@@ -2322,6 +2325,14 @@ def run_once(
     ugv_fleet = UGVFleet(ugvs)
 
     uavs: list[UAVController] = []
+    
+    gp_prior_mean_mode = str(deep_get(params, "gp_prior_mean_mode", "zero"))
+
+    if gp_prior_mean_mode == "threshold":
+        prior_mean = float(deep_get(params, "calibrator.threshold", 0.7))
+    else:
+        prior_mean = float(deep_get(params, "gp_prior_mean_value", 0.0))
+
     for k in range(num_uavs):
         p0 = uav_init[k]
         init_obs = environment_function(p0, gt, rng=rng, noise_std=noise_std)
@@ -2340,8 +2351,10 @@ def run_once(
             gp_max_basis=gp_max_basis,
             gp_threshold_delta=gp_threshold_delta,
             rbf_sigma=rbf_sigma,
-            prob_threshold=float(deep_get(params, "calibrator.threshold", 2.0))
+            prob_threshold=float(deep_get(params, "calibrator.threshold", 2.0)),
+            prior_mean=prior_mean,
         )
+
         uav.pos = p0.astype(float)
         uavs.append(uav)
 

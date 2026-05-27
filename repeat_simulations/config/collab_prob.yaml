@@ -1,5 +1,5 @@
 RESULTS_DIR: results
-RUN_NAME: collab_all_prob
+RUN_NAME: collab_all_prob_shita_start
 AUTO_INCREMENT: true
 
 grid_size: 30
@@ -108,3 +108,8 @@ init_position_mode: random
 init:
   margin: 3
   spacing: 5
+
+#gp_prior_mean_mode: zero
+gp_prior_mean_mode: threshold
+
+gp_prior_mean_value: 0.7
