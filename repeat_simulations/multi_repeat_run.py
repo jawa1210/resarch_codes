@@ -2282,6 +2282,34 @@ def calc_reachable_certainty_metrics(
         "reachable_cell_count": int(np.sum(mask)),
     }
 
+def calc_ugv_neighborhood_metrics(
+    ugvs,
+    mean_map,
+    var_map,
+    gt_ref,
+    radius: int = 3,
+):
+    H, W = gt_ref.shape
+    I, J = np.indices((H, W))
+
+    mask = np.zeros((H, W), dtype=bool)
+
+    for ugv in ugvs:
+        y, x = ugv.position
+        d = np.sqrt((I - y) ** 2 + (J - x) ** 2)
+        mask |= (d <= radius)
+
+    pred = mean_map[mask]
+    true = gt_ref[mask]
+    var = var_map[mask]
+    err = pred - true
+
+    return {
+        "ugv_near_rmse": float(np.sqrt(np.mean(err ** 2))),
+        "ugv_near_mae": float(np.mean(np.abs(err))),
+        "ugv_near_var": float(np.mean(var)),
+        "ugv_near_cell_count": int(np.sum(mask)),
+    }
 
 def calc_planned_path_certainty_metrics(
     path: list[np.ndarray],
@@ -2362,6 +2390,40 @@ def calc_planned_path_certainty_metrics(
         "target_expected": target_expected,
     }
 
+def calc_uav_to_ugv_future_path_metrics(
+    uavs,
+    planned_paths,
+):
+    dists = []
+
+    for uav in uavs:
+        p_uav = np.asarray(uav.pos, dtype=float)
+
+        best_d = np.inf
+
+        for path in planned_paths:
+            for p in path:
+                p_path = np.asarray(p, dtype=float)
+                d = float(np.linalg.norm(p_uav - p_path))
+                best_d = min(best_d, d)
+
+        if np.isfinite(best_d):
+            dists.append(best_d)
+
+    if len(dists) == 0:
+        return {
+            "uav_to_future_path_dist_mean": np.nan,
+            "uav_to_future_path_dist_min": np.nan,
+            "uav_to_future_path_dist_max": np.nan,
+        }
+
+    dists = np.asarray(dists, dtype=float)
+
+    return {
+        "uav_to_future_path_dist_mean": float(np.mean(dists)),
+        "uav_to_future_path_dist_min": float(np.min(dists)),
+        "uav_to_future_path_dist_max": float(np.max(dists)),
+    }
 # ============================================================
 # 7) run_once: a single simulation run (returns data_df, params_row)
 # ============================================================
@@ -2652,6 +2714,13 @@ def run_once(
     calib_num_samples_history = []
     ugv_log = {"step": []}
     fixed_std_range_initialized = False
+    ugv_log["ugv_near_rmse"] = []
+    ugv_log["ugv_near_mae"] = []
+    ugv_log["ugv_near_var"] = []
+    ugv_log["ugv_near_cell_count"] = []
+    ugv_log["uav_to_future_path_dist_mean"] = []
+    ugv_log["uav_to_future_path_dist_min"] = []
+    ugv_log["uav_to_future_path_dist_max"] = []
 
     sogp_log = {"step": []}
 
@@ -2998,6 +3067,14 @@ def run_once(
 
         fused_amb = fused_var * fused_prob * (1.0 - fused_prob)
 
+        near_metrics = calc_ugv_neighborhood_metrics(
+            ugvs=ugvs,
+            mean_map=fused_mean,
+            var_map=fused_var,
+            gt_ref=gt_initial,
+            radius=int(deep_get(params, "eval.ugv_near_radius", 3)),
+        )
+
 
         if visualize and (not fixed_std_range_initialized):
             std_init = compute_std_map(fused_var)
@@ -3069,6 +3146,10 @@ def run_once(
             ugv_log[f"ugv{k}_reachable_cell_count"].append(metrics["reachable_cell_count"])
 
         ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth, ambiguity_map=fused_amb)
+        uav_dist_metrics = calc_uav_to_ugv_future_path_metrics(
+            uavs=uavs,
+            planned_paths=ugv_fleet.planned_paths,
+        )
 
         # --- evaluation on planned path and target cell ---
         for k, ugv in enumerate(ugvs):
@@ -3097,6 +3178,19 @@ def run_once(
             ugv_log[f"ugv{k}_target_prob"].append(metrics_path["target_prob"])
             ugv_log[f"ugv{k}_target_expected"].append(metrics_path["target_expected"])
 
+        ugv_log["ugv_near_rmse"].append(near_metrics["ugv_near_rmse"])
+        ugv_log["ugv_near_mae"].append(near_metrics["ugv_near_mae"])
+        ugv_log["ugv_near_var"].append(near_metrics["ugv_near_var"])
+        ugv_log["ugv_near_cell_count"].append(near_metrics["ugv_near_cell_count"])
+        ugv_log["uav_to_future_path_dist_mean"].append(
+            uav_dist_metrics["uav_to_future_path_dist_mean"]
+        )
+        ugv_log["uav_to_future_path_dist_min"].append(
+            uav_dist_metrics["uav_to_future_path_dist_min"]
+        )
+        ugv_log["uav_to_future_path_dist_max"].append(
+            uav_dist_metrics["uav_to_future_path_dist_max"]
+        )
         V_eff = None
         A_eff = None
         if cfg.use_common_map:

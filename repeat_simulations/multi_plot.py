@@ -879,4 +879,4 @@ if __name__ == "__main__":
         plot_eval=True,   # Falseにすれば評価plotをOFF
         plot_sogp_case=True, # FalseにすればSOGP case plotをOFF
         plot_threshold_count=True,
-        threshold=None, ) 
+        threshold=None, )
