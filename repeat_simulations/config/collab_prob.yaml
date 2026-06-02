@@ -1,9 +1,9 @@
 RESULTS_DIR: results
-RUN_NAME: collab_all_prob_shita_start
+RUN_NAME: collab_amb_vari_zero
 AUTO_INCREMENT: true
 
 grid_size: 30
-noise_std: 0.5
+noise_std: 0.1
 num_uavs: 3
 num_ugvs: 2
 steps: 1800
@@ -29,8 +29,10 @@ cfg:
   #nominal_mode : to_ugv_future
   #nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
   nominal_mode: to_ugv_reachable_best_amb
+  #nominal_mode: to_ugv_high_variance_if_in_voroni_else_waypoint
 
-  nominal_hold_steps: 5
+
+  nominal_hold_steps: 10
 
 
   use_voronoi: true
@@ -63,8 +65,8 @@ cfg:
   signal_mode: gp_logistic_prob
   #signal_mode: gp_mean
 
-  #uav_waypoint_signal: gp_var
-  uav_waypoint_signal: prob_ambiguity
+  uav_waypoint_signal: gp_var
+  #uav_waypoint_signal: prob_ambiguity
 
   map_publish_period: 0.5
 
@@ -109,7 +111,7 @@ init:
   margin: 3
   spacing: 5
 
-#gp_prior_mean_mode: zero
-gp_prior_mean_mode: threshold
+gp_prior_mean_mode: zero
+#gp_prior_mean_mode: threshold
 
-gp_prior_mean_value: 0.7
+gp_prior_mean_value: 0.0

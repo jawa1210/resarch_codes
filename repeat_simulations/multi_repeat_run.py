@@ -326,20 +326,49 @@ class VelocityLimitation:
             cbfs.append((self.max_velocity, -n_x, -n_y, 0.0))  # slackなし
         return cbfs
     
-class FieldLimitation:
-    def __init__(self, grid_size: int, position: np.ndarray, slack: float = 0.0):
-        self.center = np.array([grid_size/2, grid_size/2], dtype=float)
-        self.radius = float(grid_size/2)
-        self.position = position
-        self.slack = float(slack)
+# class FieldLimitation:
+#     def __init__(self, grid_size: int, position: np.ndarray, slack: float = 0.0):
+#         self.center = np.array([grid_size/2, grid_size/2], dtype=float)
+#         self.radius = float(grid_size/2)
+#         self.position = position
+#         self.slack = float(slack)
     
+#     def calc_cbf(self):
+#         L4_norm=np.sum(((self.center - self.position)/self.radius)**4)
+#         cbf=1-L4_norm
+
+#         grad=4*((self.center - self.position)**3)/(self.radius**4)
+
+#         return [(cbf, grad[0], grad[1], self.slack)]
+
+class FieldLimitation:
+    def __init__(self, grid_size: int, position: np.ndarray, slack: float = 0.0, alpha: float = 1.0, margin: float = 0.0):
+        self.grid_size = int(grid_size)
+        self.position = np.asarray(position, dtype=float)
+        self.slack = float(slack)
+        self.alpha = float(alpha)
+        self.margin = float(margin)
+
     def calc_cbf(self):
-        L4_norm=np.sum(((self.center - self.position)/self.radius)**4)
-        cbf=1-L4_norm
+        y, x = self.position
+        ymin = self.margin
+        xmin = self.margin
+        ymax = self.grid_size - 1 - self.margin
+        xmax = self.grid_size - 1 - self.margin
 
-        grad=4*((self.center - self.position)**3)/(self.radius**4)
+        return [
+            # y >= ymin
+            (self.alpha * (y - ymin),  1.0,  0.0, self.slack),
 
-        return [(cbf, -grad[0], -grad[1], self.slack)]
+            # y <= ymax
+            (self.alpha * (ymax - y), -1.0,  0.0, self.slack),
+
+            # x >= xmin
+            (self.alpha * (x - xmin),  0.0,  1.0, self.slack),
+
+            # x <= xmax
+            (self.alpha * (xmax - x),  0.0, -1.0, self.slack),
+        ]
 
 
 class HarvestLogitCalibrator:
@@ -1236,6 +1265,8 @@ NominalMode = Literal[
     "to_ugv_future",
     "to_ugv_reachable_best_amb",
     "to_ugv_future_if_in_voronoi_else_waypoint",
+    "to_ugv_high_variance_if_in_voroni_else_waypoint",
+    "to_ugv_reachable_bestamb_if_in_voroni_else_waypoint",
 ]
 CommonMapMode = Literal["point", "direction"]
 SignalMode = Literal["gp_mean", "gp_logistic_prob"]
@@ -1872,19 +1903,27 @@ class UAVController:
         cfg = self.cfg
         self.current_chase_point = None
 
+        if cfg.nominal_mode == "to_waypoint":
+            return -cfg.k_pp * (self.pos - waypoint)
+
         if cfg.nominal_mode == "to_ugv_reachable_best_amb":
             if fused_amb is None:
                 return -cfg.k_pp * (self.pos - waypoint)
+
             ugv_idx = self._find_ugv_in_my_voronoi()
+
             if ugv_idx is None:
                 return -cfg.k_pp * (self.pos - waypoint)
+
             tgt = self.ugv_fleet.target_cell_max_Aeff_in_reachable(
                 ugv_idx=ugv_idx,
                 A_eff=fused_amb,
                 depth=cfg.dir_num_steps
             )
+
             if tgt is None:
                 return -cfg.k_pp * (self.pos - waypoint)
+
             self.current_chase_point = tgt.copy()
             return -cfg.k_ugv * (self.pos - tgt)
 
@@ -1916,6 +1955,102 @@ class UAVController:
 
             # 制御もfuture pointへ向かう
             return -cfg.k_ugv * (self.pos - ugv_future)
+        
+        if cfg.nominal_mode == "to_ugv_high_variance_if_in_voroni_else_waypoint":
+            ugv_idx = self._find_ugv_in_my_voronoi()
+
+            if ugv_idx is not None:
+                _, V_map, _ = self.get_maps_for_ugv()
+
+                tgt = self.ugv_fleet.target_cell_max_Aeff_in_reachable(
+                    ugv_idx=ugv_idx,
+                    A_eff=V_map,
+                    depth=cfg.dir_num_steps
+                )
+
+                if tgt is not None:
+                    self.current_chase_point = tgt.copy()
+                    return -cfg.k_ugv * (self.pos - tgt)
+
+            tgt = self._target_max_in_my_voronoi(self.get_maps_for_ugv()[1])
+
+            if tgt is None:
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            self.current_chase_point = tgt.copy()
+            return -cfg.k_pp * (self.pos - tgt)
+
+
+        if cfg.nominal_mode == "to_ugv_high_variance_if_in_voroni_else_waypoint":
+            ugv_idx = self._find_ugv_in_my_voronoi()
+
+            if ugv_idx is not None:
+                _, V_map, _ = self.get_maps_for_ugv()
+
+                tgt = self.ugv_fleet.target_cell_max_Aeff_in_reachable(
+                    ugv_idx=ugv_idx,
+                    A_eff=V_map,
+                    depth=cfg.dir_num_steps
+                )
+
+                if tgt is not None:
+                    self.current_chase_point = tgt.copy()
+                    return -cfg.k_ugv * (self.pos - tgt)
+
+            tgt = self._target_max_in_my_voronoi(self.get_maps_for_ugv()[1])
+
+            if tgt is None:
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            self.current_chase_point = tgt.copy()
+            return -cfg.k_pp * (self.pos - tgt)
+
+
+        if cfg.nominal_mode == "to_ugv_reachable_bestamb_if_in_voroni_else_waypoint":
+            if fused_amb is None:
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            ugv_idx = self._find_ugv_in_my_voronoi()
+
+            if ugv_idx is not None:
+                tgt = self.ugv_fleet.target_cell_max_Aeff_in_reachable(
+                    ugv_idx=ugv_idx,
+                    A_eff=fused_amb,
+                    depth=cfg.dir_num_steps
+                )
+
+                if tgt is not None:
+                    self.current_chase_point = tgt.copy()
+                    return -cfg.k_ugv * (self.pos - tgt)
+
+            tgt = self._target_max_in_my_voronoi(fused_amb)
+
+            if tgt is None:
+                return -cfg.k_pp * (self.pos - waypoint)
+
+            self.current_chase_point = tgt.copy()
+            return -cfg.k_pp * (self.pos - tgt)
+
+    def _target_max_in_my_voronoi(self, score_map: np.ndarray) -> Optional[np.ndarray]:
+        H, W = score_map.shape
+
+        if self._voronoi_mask is None:
+            mask = np.ones((H, W), dtype=bool)
+        else:
+            mask = self._voronoi_mask.astype(bool)
+
+        if not np.any(mask):
+            return None
+
+        S = score_map.copy()
+        S[~mask] = -np.inf
+
+        if not np.isfinite(S).any():
+            return None
+
+        yi, xj = np.unravel_index(int(np.nanargmax(S)), S.shape)
+        return np.array([float(yi), float(xj)], dtype=float)
+        
 
     def _find_ugv_in_my_voronoi(self) -> Optional[int]:
         if (self._voronoi_mask is None) or (not self.cfg.use_voronoi):
@@ -1972,7 +2107,7 @@ class UAVController:
         _, V_map, P_map = self.get_maps_for_ugv()
 
         if cfg.uav_waypoint_signal == "prob_ambiguity":
-            A_map = P_map * (1.0 - P_map)
+            A_map = V_map * P_map * (1.0 - P_map)
             V_for_wp = A_map
         else:
             V_for_wp = V_map
@@ -2070,9 +2205,9 @@ class UAVController:
         #     self.v = (cfg.v_limit / max(spd, 1e-12)) * self.v
 
         self.pos = self.pos + self.v * cfg.control_period
-        H = W = self.grid_size
-        self.pos[0] = float(np.clip(self.pos[0], 0, H - 1))
-        self.pos[1] = float(np.clip(self.pos[1], 0, W - 1))
+        # H = W = self.grid_size
+        # self.pos[0] = float(np.clip(self.pos[0], 0, H - 1))
+        # self.pos[1] = float(np.clip(self.pos[1], 0, W - 1))
 
 
 # ============================================================
@@ -2371,7 +2506,8 @@ def run_once(
 
         gt_style = get_gt_plot_style(gt_initial)
 
-        mean_vmin, mean_vmax = compute_display_limits(gt_initial, binary=False)
+        mean_vmin = 0.0
+        mean_vmax = float(np.nanmax(gt_initial))
 
         std0 = np.zeros((grid_size, grid_size), dtype=float)
         std_vmin = 0.0
@@ -2419,10 +2555,10 @@ def run_once(
         # --- panel 3: GT ---
         im_gt = ax[3].imshow(
             gt_initial,
-            cmap=gt_style["cmap"],
+            cmap="viridis",
             origin="lower",
-            vmin=gt_style["vmin"],
-            vmax=gt_style["vmax"],
+            vmin=0.0,
+            vmax=1.0,
         )
         cb3 = fig.colorbar(im_gt, ax=ax[3], fraction=0.046, pad=0.04)
         if gt_style["colorbar_ticks"] is not None:
@@ -2598,8 +2734,8 @@ def run_once(
         gt_style = get_gt_plot_style(gt)
 
         mean_map_to_show = fused_mean
-        mean_vmin = float(np.nanmin(gt))
-        mean_vmax = float(np.nanmax(gt))
+        mean_vmin = 0.0
+        mean_vmax = 1.0
         mean_cmap = "viridis"
 
         prob_map_to_show = (
@@ -2870,7 +3006,8 @@ def run_once(
             if std_vmax < 1e-12:
                 std_vmax = 1.0
 
-            mean_vmin, mean_vmax = compute_display_limits(gt_initial, binary=False)
+            mean_vmin = 0.0
+            mean_vmax = float(np.nanmax(gt_initial))
             fixed_std_range_initialized = True
 
         # UGV visited logging
@@ -3094,8 +3231,8 @@ def run_once(
             # GT は動的収穫後の形をそのまま表示
             gt_style_now = get_gt_plot_style(gt)
             im_gt.set_data(gt)
-            im_gt.set_cmap(gt_style_now["cmap"])
-            im_gt.set_clim(gt_style_now["vmin"], gt_style_now["vmax"])
+            im_gt.set_cmap("viridis")
+            im_gt.set_clim(0.0, 1.0)
 
             im_mean.set_data(mean_map_to_show)
             im_std.set_data(std_map_to_show)
