@@ -60,8 +60,8 @@ cfg:
   cbf_j_alpha: 0.01
   cbf_j_gamma: 6.0
 
-  signal_mode: gp_logistic_prob
-  #signal_mode: gp_mean
+  #signal_mode: gp_logistic_prob
+  signal_mode: gp_mean
 
   uav_waypoint_signal: gp_var
   #uav_waypoint_signal: prob_ambiguity
@@ -99,7 +99,7 @@ ground_truth:
   max_value: 1.0
   num_runs: 20
 
-init_position_mode: random
+init_position_mode: ugv_left_bottom_uav_right_top_cluster
 
 init:
   margin: 3

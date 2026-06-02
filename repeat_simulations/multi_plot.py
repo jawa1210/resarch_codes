@@ -291,30 +291,62 @@ def plot_two_results_files(
             print(f"[WARN] {label}: gt_sum がないため収穫率を計算できません。")
             return
 
+        # UGVが通ったpath上の真値合計 = 最終的な累積収穫量
         final_crop = (
             df.sort_values("step")
-              .groupby("run")["true_crop_sum"]
-              .last()
+            .groupby("run")["true_crop_sum"]
+            .last()
         )
 
+        # GT map全体の真値合計
         gt_sum = df.groupby("run")["gt_sum"].first()
-        count_ge = df.groupby("run")["gt_count_ge_threshold"].first()
-        gt_sum_ge = df.groupby("run")["gt_sum_ge_threshold"].first()
 
         ratio = 100.0 * final_crop / gt_sum
 
+        # UGVが通ったセルのうち、真値がthreshold以上だった回数
+        target_cols = [
+            c for c in df.columns
+            if c.startswith("ugv") and c.endswith("_target_true")
+        ]
+
+        if len(target_cols) > 0:
+            th = df.groupby("run")["threshold"].first()
+            path_threshold_count = {}
+
+            for run_id, sub in df.groupby("run"):
+                sub = sub.sort_values("step").copy()
+                threshold_run = float(th.loc[run_id])
+
+                # true_crop_sum が増えたstepだけを「収穫発生step」とする
+                sub["crop_delta"] = sub["true_crop_sum"].diff().fillna(sub["true_crop_sum"])
+                harvest_mask = sub["crop_delta"] > 1e-9
+
+                # 収穫が発生したstepだけで、target_true >= threshold のUGV数を数える
+                vals = sub.loc[harvest_mask, target_cols].to_numpy()
+                path_threshold_count[run_id] = int(np.sum(vals >= threshold_run))
+
+            path_threshold_count = pd.Series(path_threshold_count)
+        else:
+            path_threshold_count = None
+
         print("\n" + "=" * 70)
-        print(f"{label}: Harvest ratio summary")
+        print(f"{label}: UGV path harvest summary")
         print("=" * 70)
+
+        print(f"UGV path 真値合計 平均: {final_crop.mean():.3f}")
+        print(f"UGV path 真値合計 最小: {final_crop.min():.3f}")
+        print(f"UGV path 真値合計 最大: {final_crop.max():.3f}")
+
         print(f"収穫量 / GT真値合計 平均: {ratio.mean():.2f}%")
         print(f"収穫量 / GT真値合計 最小: {ratio.min():.2f}%")
         print(f"収穫量 / GT真値合計 最大: {ratio.max():.2f}%")
-        print(f"GT真値合計 平均: {gt_sum.mean():.3f}")
-        print(f"閾値以上マス数 平均: {count_ge.mean():.3f}")
 
-        print(f"閾値以上セル真値合計 平均: {gt_sum_ge.mean():.3f}")
-        print(f"閾値以上セル真値合計 最小: {gt_sum_ge.min():.3f}")
-        print(f"閾値以上セル真値合計 最大: {gt_sum_ge.max():.3f}")
+        print(f"GT真値合計 平均: {gt_sum.mean():.3f}")
+
+        if path_threshold_count is not None:
+            print(f"UGV path 閾値以上セル収穫数 平均: {path_threshold_count.mean():.3f}")
+            print(f"UGV path 閾値以上セル収穫数 最小: {path_threshold_count.min():.0f}")
+            print(f"UGV path 閾値以上セル収穫数 最大: {path_threshold_count.max():.0f}")
 
     print_harvest_ratio_summary(df1, label1)
 
@@ -634,7 +666,6 @@ def plot_two_results_files(
         def add_threshold_count(df: pd.DataFrame, name: str) -> pd.DataFrame | None:
             df = df.copy()
 
-            # UGVが実際に次に踏んだセルの真値
             target_cols = [
                 c for c in df.columns
                 if c.startswith("ugv") and c.endswith("_target_true")
@@ -645,11 +676,18 @@ def plot_two_results_files(
                 print("       シミュレーション側で ugv0_target_true, ugv1_target_true を保存してください。")
                 return None
 
-            # そのstepで threshold 以上を踏んだUGV数
-            df["threshold_hit_step"] = (df[target_cols] >= th).sum(axis=1)
+            df = df.sort_values(["run", "step"]).copy()
 
-            # runごとに累積
-            df = df.sort_values(["run", "step"])
+            # 収穫量が増えたstepだけを採用
+            df["crop_delta"] = df.groupby("run")["true_crop_sum"].diff().fillna(df["true_crop_sum"])
+            df["harvest_step"] = df["crop_delta"] > 1e-9
+
+            # 収穫が発生したstepのみ、閾値以上の target_true を数える
+            df["threshold_hit_step"] = 0
+            df.loc[df["harvest_step"], "threshold_hit_step"] = (
+                df.loc[df["harvest_step"], target_cols] >= th
+            ).sum(axis=1)
+
             df["threshold_hit_cumsum"] = (
                 df.groupby("run")["threshold_hit_step"].cumsum()
             )
@@ -724,8 +762,8 @@ def plot_two_results_files(
                     )
 
             ax.set_xlabel(f"時間 (s, step×{dt:.2f}s)")
-            ax.set_ylabel(f"閾値以上セル通過回数の累積")
-            ax.set_title(rf"UGVが真値 $\geq {th:.2f}$ のセルを通った累積回数")
+            ax.set_ylabel("閾値以上セル収穫回数の累積")
+            ax.set_title(rf"UGVが真値 $\geq {th:.2f}$ のセルを収穫した累積回数")
             ax.grid(True)
             ax.legend()
             plt.tight_layout()
@@ -829,8 +867,8 @@ if __name__ == "__main__":
     # )
 
     # ② 2条件比較（以前表示）
-    file_A = "not_collabo_not_collab_not_weighted_20_narrow_seed1234_data_20runs.csv"
-    file_B = "gp_logistic_prob_collab_ucb_20_seed1234_data_20runs.csv"
+    file_A = "collab_mu_only_ugv_future_collab_mu_only_ugv_future_seed1234_data_15runs.csv"
+    file_B = "collab_mu_only_prob_collab_mu_only_prob_seed1234_data_15runs.csv"
     plot_two_results_files(
         file_A, file_B,
         label1="条件A",
@@ -839,4 +877,6 @@ if __name__ == "__main__":
         ds=0.5,
         gamma=6.0,
         plot_eval=True,   # Falseにすれば評価plotをOFF
-        plot_sogp_case=True,)  # FalseにすればSOGP case plotをOFF
+        plot_sogp_case=True, # FalseにすればSOGP case plotをOFF
+        plot_threshold_count=True,
+        threshold=None, ) 

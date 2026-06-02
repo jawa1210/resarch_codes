@@ -85,7 +85,7 @@ cfg:
 
   ugv_move_period: 10
 
-  use_local_sogp_delta: true
+  use_local_sogp_delta: false
   local_sogp_radius: 7.0
   local_sogp_delta_scale: 0.8
 
@@ -105,7 +105,7 @@ ground_truth:
   max_value: 1.0
   num_runs: 20
 
-init_position_mode: random
+init_position_mode: ugv_left_bottom_uav_right_top_cluster
 
 init:
   margin: 3
