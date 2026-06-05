@@ -2,11 +2,11 @@ RESULTS_DIR: results
 RUN_NAME: not_collab_nom_amb
 AUTO_INCREMENT: true
 
-grid_size: 50
+grid_size: 30
 noise_std: 0.1
 num_uavs: 3
 num_ugvs: 2
-steps: 1800
+steps: 100
 
 ugv_depth: 7
 reward_type: 6

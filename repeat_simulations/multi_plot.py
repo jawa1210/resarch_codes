@@ -190,6 +190,37 @@ def infer_params_path_from_data_path(data_path: str) -> str | None:
         return cand
     return None
 
+def infer_artifact_path_from_data_path(data_path: str) -> str:
+    d = os.path.dirname(data_path)
+    cand = os.path.join(d, "analysis_artifacts_allruns.csv")
+    if not os.path.exists(cand):
+        raise FileNotFoundError(f"解析用CSVが見つかりません: {cand}")
+    return cand
+
+
+def compute_gt_stats_from_artifacts(
+    artifact_csv_path: str,
+    threshold: float | None = None,
+):
+    art = pd.read_csv(artifact_csv_path)
+
+    gt_df = art[art["type"] == "gt_initial"].copy()
+
+    rows = []
+    for run_idx, g in gt_df.groupby("run_idx"):
+        vals = g["value"].to_numpy()
+        th = 0.7 if threshold is None else float(threshold)
+
+        rows.append({
+            "run_idx": int(run_idx),
+            "gt_sum": float(vals.sum()),
+            "gt_count_ge_threshold": int((vals >= th).sum()),
+            "gt_sum_ge_threshold": float(vals[vals >= th].sum()),
+            "threshold": th,
+        })
+
+    return pd.DataFrame(rows)
+
 
 def plot_two_results_files(
         file1: str,
@@ -205,6 +236,7 @@ def plot_two_results_files(
         plot_sogp_case: bool = True,
         plot_threshold_count: bool = True,
         threshold: float | None = None,
+        max_runs: int | None = None,
     ):
     """
     file2 を None にすると単独ファイルのプロットになる。
@@ -218,23 +250,26 @@ def plot_two_results_files(
     # ── CSV 読み込み ───────────────────────────
     df1_raw = pd.read_csv(file1)
     df1 = _sanitize_df(df1_raw, "file1")
+    if max_runs is not None:
+        keep_runs1 = sorted(df1["run"].unique())[:max_runs]
+        df1 = df1[df1["run"].isin(keep_runs1)].copy()
+        print(f"[INFO] file1 は最初の {max_runs} runs のみ使用: {keep_runs1}")
 
     # =====================================================
     # GT情報をparams CSVから自動再生成して結合
     # =====================================================
-    param1 = infer_params_path_from_data_path(file1)
-    if param1 is not None:
-        gt_stats1 = compute_gt_stats_from_params(param1, threshold=threshold)
-        df1 = df1.merge(
-            gt_stats1,
-            left_on="run",
-            right_on="run_idx",
-            how="left",
-            suffixes=("", "_gt")
-        )
-        print("[INFO] file1 に gt_sum / gt_count_ge_threshold を追加しました。")
-    else:
-        print(f"[WARN] file1 の params CSV が見つかりません: {file1}")
+    artifact_path1 = infer_artifact_path_from_data_path(file1)
+    gt_stats1 = compute_gt_stats_from_artifacts(artifact_path1, threshold=threshold)
+    df1 = df1.merge(
+        gt_stats1,
+        left_on="run",
+        right_on="run_idx",
+        how="left",
+        suffixes=("", "_gt")
+    )
+
+    print("[INFO] file1 に保存済みGTから gt_sum / gt_count_ge_threshold を追加しました。")
+
 
     # ── 表示区間のカット ─────────────────────────
     if max_time is not None:
@@ -254,21 +289,23 @@ def plot_two_results_files(
     if file2 is not None:
         df2_raw = pd.read_csv(file2)
         df2 = _sanitize_df(df2_raw, "file2")
+        if max_runs is not None:
+            keep_runs2 = sorted(df2["run"].unique())[:max_runs]
+            df2 = df2[df2["run"].isin(keep_runs2)].copy()
+            print(f"[INFO] file2 は最初の {max_runs} runs のみ使用: {keep_runs2}")
 
-        param2 = infer_params_path_from_data_path(file2)
-        if param2 is not None:
-            gt_stats2 = compute_gt_stats_from_params(param2, threshold=threshold)
-            df2 = df2.merge(
-                gt_stats2,
-                left_on="run",
-                right_on="run_idx",
-                how="left",
-                suffixes=("", "_gt")
-            )
-            print("[INFO] file2 に gt_sum / gt_count_ge_threshold を追加しました。")
-        else:
-            print(f"[WARN] file2 の params CSV が見つかりません: {file2}")
+        artifact_path2 = infer_artifact_path_from_data_path(file2)
+        gt_stats2 = compute_gt_stats_from_artifacts(artifact_path2, threshold=threshold)
 
+        df2 = df2.merge(
+            gt_stats2,
+            left_on="run",
+            right_on="run_idx",
+            how="left",
+            suffixes=("", "_gt")
+        )
+
+        print("[INFO] file2 に保存済みGTから gt_sum / gt_count_ge_threshold を追加しました。")
         if label2 is None:
             label2 = _nice_label_from_path(file2)
 
@@ -867,8 +904,8 @@ if __name__ == "__main__":
     # )
 
     # ② 2条件比較（以前表示）
-    file_A = "collab_mu_only_ugv_future_collab_mu_only_ugv_future_seed1234_data_15runs.csv"
-    file_B = "collab_mu_only_prob_collab_mu_only_prob_seed1234_data_15runs.csv"
+    file_A = "nom_all_amb_not_collab_prob_init_change_nom_amb_seed1234_data_15runs.csv"
+    file_B = "collab_all_amb_collab_prob_init_change_all_nom_amb_seed1234_data_15runs.csv"
     plot_two_results_files(
         file_A, file_B,
         label1="条件A",
@@ -879,4 +916,6 @@ if __name__ == "__main__":
         plot_eval=True,   # Falseにすれば評価plotをOFF
         plot_sogp_case=True, # FalseにすればSOGP case plotをOFF
         plot_threshold_count=True,
-        threshold=None, )
+        threshold=None, 
+        max_runs=15,  # None にすれば全runを使用
+        ) 

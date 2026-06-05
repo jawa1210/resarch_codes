@@ -49,6 +49,15 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 GT_CMAP = ListedColormap(["#1f77b4", "#d62728"])  # 0=blue, 1=red
 GT_NORM = BoundaryNorm([-0.5, 0.5, 1.5], GT_CMAP.N)
 
+ARTIFACT_COLUMNS = [
+            "run_idx", "step", "type",
+            "ugv_id", "uav_id", "basis_id",
+            "y", "x", "cell_y", "cell_x",
+            "value", "mu", "var", "prob", "true",
+            "inside_reachable",
+            "ugv_y", "ugv_x",
+        ]
+
 def normalize_01(arr: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     a_min = float(np.nanmin(arr))
     a_max = float(np.nanmax(arr))
@@ -2489,17 +2498,8 @@ def run_once(
 
     # --- dynamic harvest states ---
     gt_initial = gt.copy()  # 評価・可視化用に元GTを保存したいなら残す
-    harvested_mask = np.zeros_like(gt, dtype=bool)
-    harvested_total = 0.0
 
-    calibrator = HarvestLogitCalibrator(
-        threshold=float(deep_get(params, "calibrator.threshold", 2.0)),
-        init_w=float(deep_get(params, "calibrator.init_w", 1.0)),
-        lr=float(deep_get(params, "calibrator.lr", 0.03)),
-        l2=float(deep_get(params, "calibrator.l2", 1e-4)),
-        min_samples=int(deep_get(params, "calibrator.min_samples", 20)),
-    )
-
+    artifact_csv_path = os.path.join(run_root, "analysis_artifacts_allruns.csv")
 
     ugvs = []
     for k in range(num_ugvs):
@@ -3014,6 +3014,252 @@ def run_once(
             plt.ion()
 
 
+    def save_reachable_map_cells_csv(
+        out_path: str,
+        run_idx: int,
+        step: int,
+        ugv_fleet,
+        fused_mean: np.ndarray,
+        fused_var: np.ndarray,
+        fused_prob: np.ndarray,
+        gt_initial: np.ndarray,
+        ugv_depth: int,
+    ):
+        rows = []
+        H, W = gt_initial.shape
+
+        for k, ugv in enumerate(ugv_fleet.ugvs):
+            allowed = ugv_fleet.voronoi_masks[k] if k < len(ugv_fleet.voronoi_masks) else None
+
+            reach_mask = ugv.reachable_unvisited_mask(
+                depth=ugv_depth,
+                allowed_mask=allowed
+            )
+
+            ys, xs = np.where(reach_mask)
+
+            for y, x in zip(ys, xs):
+                rows.append({
+                    "run_idx": run_idx,
+                    "step": step,
+                    "type": "reachable_map_cell",
+                    "ugv_id": k,
+                    "uav_id": -1,
+                    "basis_id": -1,
+                    "y": int(y),
+                    "x": int(x),
+                    "cell_y": int(y),
+                    "cell_x": int(x),
+                    "value": np.nan,
+                    "mu": float(fused_mean[y, x]),
+                    "var": float(fused_var[y, x]),
+                    "prob": float(fused_prob[y, x]),
+                    "true": float(gt_initial[y, x]),
+                    "inside_reachable": 1,
+                    "ugv_y": int(ugv.position[0]),
+                    "ugv_x": int(ugv.position[1]),
+                })
+
+        if len(rows) == 0:
+            return
+
+        df = pd.DataFrame(rows)
+        df = df.reindex(columns=ARTIFACT_COLUMNS)
+
+        write_header = not os.path.exists(out_path)
+        df.to_csv(out_path, mode="a", header=write_header, index=False)
+
+    def append_map_csv(out_path, run_idx, step, map_name, arr):
+        rows = []
+        H, W = arr.shape
+
+        for y in range(H):
+            for x in range(W):
+                rows.append({
+                    "run_idx": run_idx,
+                    "step": step,
+                    "type": map_name,
+                    "ugv_id": -1,
+                    "uav_id": -1,
+                    "basis_id": -1,
+                    "y": y,
+                    "x": x,
+                    "cell_y": y,
+                    "cell_x": x,
+                    "value": float(arr[y, x]),
+                    "mu": np.nan,
+                    "var": np.nan,
+                    "prob": np.nan,
+                    "true": np.nan,
+                    "inside_reachable": -1,
+                    "ugv_y": np.nan,
+                    "ugv_x": np.nan,
+                })
+
+        df = pd.DataFrame(rows)
+        df = df.reindex(columns=ARTIFACT_COLUMNS)
+
+        write_header = not os.path.exists(out_path)
+        df.to_csv(out_path, mode="a", header=write_header, index=False)
+
+
+    def save_gp_points_reachable_csv(
+        out_path,
+        run_idx,
+        step,
+        uavs,
+        ugv_fleet,
+        grid_size,
+        ugv_depth,
+    ):
+        
+        def reachable_raw_mask(ugv, depth, allowed_mask=None):
+            H = W = grid_size
+            sy, sx = int(ugv.position[0]), int(ugv.position[1])
+
+            yy, xx = np.indices((H, W))
+            manhattan = np.abs(yy - sy) + np.abs(xx - sx)
+
+            mask = manhattan <= depth
+
+            if allowed_mask is not None:
+                mask &= allowed_mask.astype(bool)
+
+            return mask
+
+        reachable_any = np.zeros((grid_size, grid_size), dtype=bool)
+
+        for k, ugv in enumerate(ugv_fleet.ugvs):
+            allowed = ugv_fleet.voronoi_masks[k] if k < len(ugv_fleet.voronoi_masks) else None
+            reach = reachable_raw_mask(
+                ugv=ugv,
+                depth=ugv_depth,
+                allowed_mask=allowed,
+            )
+            reachable_any |= reach
+
+        rows = []
+
+        # =========================
+        # 1. GP basis points
+        # =========================
+        for uav_id, uav in enumerate(uavs):
+            X = np.asarray(uav.gp.X, dtype=float)
+
+            for basis_id, p in enumerate(X):
+                y_float = float(p[0])
+                x_float = float(p[1])
+
+                cy = int(round(y_float))
+                cx = int(round(x_float))
+
+                inside = False
+                if 0 <= cy < grid_size and 0 <= cx < grid_size:
+                    inside = bool(reachable_any[cy, cx])
+
+                rows.append({
+                    "run_idx": run_idx,
+                    "step": step,
+                    "type": "gp_point",
+                    "uav_id": uav_id,
+                    "basis_id": basis_id,
+                    "ugv_id": -1,
+                    "y": y_float,
+                    "x": x_float,
+                    "cell_y": cy,
+                    "cell_x": cx,
+                    "inside_reachable": int(inside),
+                    "value": np.nan,
+                    "mu": np.nan,
+                    "var": np.nan,
+                    "prob": np.nan,
+                    "true": np.nan,
+                    "ugv_y": np.nan,
+                    "ugv_x": np.nan,
+                })
+
+        # =========================
+        # 2. UGV positions
+        # =========================
+        for ugv_id, ugv in enumerate(ugv_fleet.ugvs):
+            y = int(ugv.position[0])
+            x = int(ugv.position[1])
+
+            rows.append({
+                "run_idx": run_idx,
+                "step": step,
+                "type": "ugv_position",
+                "uav_id": -1,
+                "basis_id": -1,
+                "ugv_id": ugv_id,
+                "y": float(y),
+                "x": float(x),
+                "cell_y": y,
+                "cell_x": x,
+                "inside_reachable": -1,
+                "value": np.nan,
+                "mu": np.nan,
+                "var": np.nan,
+                "prob": np.nan,
+                "true": np.nan,
+                "ugv_y": float(y),
+                "ugv_x": float(x),
+            })
+
+        # =========================
+        # 3. All reachable cells
+        # =========================
+        ys, xs = np.where(reachable_any)
+
+        for y, x in zip(ys, xs):
+            rows.append({
+                "run_idx": run_idx,
+                "step": step,
+                "type": "reachable_cell",
+                "uav_id": -1,
+                "basis_id": -1,
+                "ugv_id": -1,
+                "y": float(y),
+                "x": float(x),
+                "cell_y": int(y),
+                "cell_x": int(x),
+                "inside_reachable": 1,
+                "value": np.nan,
+                "mu": np.nan,
+                "var": np.nan,
+                "prob": np.nan,
+                "true": np.nan,
+                "ugv_y": np.nan,
+                "ugv_x": np.nan,
+            })
+
+        if len(rows) == 0:
+            return
+
+        df = pd.DataFrame(rows)
+        df = df.reindex(columns=ARTIFACT_COLUMNS)
+
+        write_header = not os.path.exists(out_path)
+        df.to_csv(out_path, mode="a", header=write_header, index=False)
+
+
+    append_map_csv(
+        out_path=artifact_csv_path,
+        run_idx=run_idx,
+        step=0,
+        map_name="gt_initial",
+        arr=gt_initial,
+    )
+    harvested_mask = np.zeros_like(gt, dtype=bool)
+    harvested_total = 0.0
+
+    calibrator = HarvestLogitCalibrator(
+        threshold=float(deep_get(params, "calibrator.threshold", 2.0)),
+        init_w=float(deep_get(params, "calibrator.init_w", 1.0)),
+        lr=float(deep_get(params, "calibrator.lr", 0.03)),
+        l2=float(deep_get(params, "calibrator.l2", 1e-4)),
+        min_samples=int(deep_get(params, "calibrator.min_samples", 20)),
+    )
 
     # sim loop
     # sim loop
@@ -3144,6 +3390,29 @@ def run_once(
             ugv_log[f"ugv{k}_reachable_var"].append(metrics["reachable_var"])
             ugv_log[f"ugv{k}_reachable_calib"].append(metrics["reachable_calib"])
             ugv_log[f"ugv{k}_reachable_cell_count"].append(metrics["reachable_cell_count"])
+
+
+        save_reachable_map_cells_csv(
+            out_path=artifact_csv_path,
+            run_idx=run_idx,
+            step=step,
+            ugv_fleet=ugv_fleet,
+            fused_mean=fused_mean,
+            fused_var=fused_var,
+            fused_prob=fused_prob,
+            gt_initial=gt_initial,
+            ugv_depth=ugv_depth,
+        )
+
+        save_gp_points_reachable_csv(
+            out_path=artifact_csv_path,
+            run_idx=run_idx,
+            step=step,
+            uavs=uavs,
+            ugv_fleet=ugv_fleet,
+            grid_size=grid_size,
+            ugv_depth=ugv_depth,
+        )
 
         ugv_fleet.plan_all(ugv_E, fused_var, depth=ugv_depth, ambiguity_map=fused_amb)
         uav_dist_metrics = calc_uav_to_ugv_future_path_metrics(
@@ -3500,6 +3769,11 @@ def run_once(
             "elapsed": f"{elapsed/60:.1f}m",
             "eta": f"{eta/60:.1f}m",
         })
+
+    append_map_csv(artifact_csv_path, run_idx, steps - 1, "final_gp_mean", fused_mean)
+    append_map_csv(artifact_csv_path, run_idx, steps - 1, "final_gp_var", fused_var)
+    append_map_csv(artifact_csv_path, run_idx, steps - 1, "final_gp_prob", fused_prob)
+    append_map_csv(artifact_csv_path, run_idx, steps - 1, "gt_after_harvest", gt)
 
     if visualize:
         plt.ioff()
