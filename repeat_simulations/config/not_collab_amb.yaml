@@ -1,5 +1,5 @@
 RESULTS_DIR: results
-RUN_NAME: collab_amb
+RUN_NAME: not_collab_nom_amb
 AUTO_INCREMENT: true
 
 grid_size: 50
@@ -25,12 +25,10 @@ cfg:
   #waypoint_mode: ugv_future_point
   #waypoint_mode: common_weighted
 
-  #nominal_mode: to_waypoint
+  nominal_mode: to_waypoint
   #nominal_mode : to_ugv_future
   #nominal_mode: to_ugv_future_if_in_voronoi_else_waypoint
-  nominal_mode: to_ugv_reachable_best_amb
-  #nominal_mode: to_ugv_high_variance_if_in_voroni_else_waypoint
-
+  #nominal_mode:to_ugv_reachable_best_amb
 
   nominal_hold_steps: 10
 
@@ -62,8 +60,8 @@ cfg:
   cbf_j_alpha: 0.01
   cbf_j_gamma: 6.0
 
-  signal_mode: gp_logistic_prob
-  #signal_mode: gp_mean
+  #signal_mode: gp_logistic_prob
+  signal_mode: gp_mean
 
   #uav_waypoint_signal: gp_var
   uav_waypoint_signal: prob_ambiguity
@@ -84,10 +82,6 @@ cfg:
   wp_power: 1.0
 
   ugv_move_period: 10
-
-  use_local_sogp_delta: false
-  local_sogp_radius: 7.0
-  local_sogp_delta_scale: 0.8
 
 calibrator:
   threshold: 0.7
@@ -115,4 +109,4 @@ init:
 gp_prior_mean_mode: zero
 #gp_prior_mean_mode: threshold
 
-gp_prior_mean_value: 0.0
+gp_prior_mean_value: 0.5

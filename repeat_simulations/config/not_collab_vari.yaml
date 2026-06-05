@@ -1,8 +1,8 @@
 RESULTS_DIR: results
-RUN_NAME: nom_vari_noise_zero
+RUN_NAME: not_collab_nom_vari
 AUTO_INCREMENT: true
 
-grid_size: 30
+grid_size: 50
 noise_std: 0.1
 num_uavs: 3
 num_ugvs: 2
@@ -99,7 +99,8 @@ ground_truth:
   max_value: 1.0
   num_runs: 20
 
-init_position_mode: ugv_left_bottom_uav_right_top_cluster
+# init_position_mode: ugv_left_bottom_uav_right_top_cluster
+init_position_mode: random
 
 init:
   margin: 3
