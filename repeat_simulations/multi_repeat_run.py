@@ -3782,7 +3782,7 @@ def run_once(
     # ==========================
     # Final summary visualization (3 panels)
     # ==========================
-    if visualize:
+    if True:
         final_mean = fused_mean
         final_var  = fused_var
         final_gt   = gt
@@ -3807,7 +3807,7 @@ def run_once(
             f"final_maps_{scenario_id}_seed{master_seed}_run{run_idx}.png"
         )
 
-        fig2, ax2 = plt.subplots(1, 4, figsize=(24, 5))
+        fig2, ax2 = plt.subplots(1, 5, figsize=(30, 5))
         for a in ax2:
             a.set_aspect("equal")
             a.set_xlim(0, grid_size - 1)
@@ -3921,30 +3921,53 @@ def run_once(
             frameon=True,
         )
 
-        # (3) Prob + threshold region
-        im2 = ax2[2].imshow(
+        # (3) GT before harvest
+        gt_initial_style = get_gt_plot_style(gt_initial)
+
+        im3 = ax2[2].imshow(
+            gt_initial,
+            cmap=gt_initial_style["cmap"],
+            origin="lower",
+            vmin=gt_initial_style["vmin"],
+            vmax=gt_initial_style["vmax"]
+        )
+        ax2[2].set_title("GT before harvest")
+        cb3 = plt.colorbar(im3, ax=ax2[2], fraction=0.046, pad=0.04)
+
+        # (4) GT after harvest
+        im4 = ax2[3].imshow(
+            final_gt,
+            cmap=gt_style["cmap"],
+            origin="lower",
+            vmin=gt_style["vmin"],
+            vmax=gt_style["vmax"]
+        )
+        ax2[3].set_title("GT after harvest")
+        cb4 = plt.colorbar(im4, ax=ax2[3], fraction=0.046, pad=0.04)
+
+        # (5) Prob + threshold region
+        im2 = ax2[4].imshow(
             final_prob_map,
             cmap="jet",
             origin="lower",
             vmin=0.0,
             vmax=1.0
         )
-        ax2[2].set_title(
+        ax2[4].set_title(
             f"Final prob\n"
             f"theta={calibrator.threshold:.2f}, learned={calibrator.learned_threshold:.2f}"
         )
-        plt.colorbar(im2, ax=ax2[2], fraction=0.046, pad=0.04)
-
+        plt.colorbar(im2, ax=ax2[4], fraction=0.046, pad=0.04)
         threshold_mask = (final_mean_map >= calibrator.learned_threshold).astype(float)
         if np.isfinite(calibrator.learned_threshold) and np.any(threshold_mask > 0):
-            ax2[2].contour(
+            ax2[4].contour(
                 threshold_mask,
                 levels=[0.5],
                 colors="white",
                 linewidths=2.0,
                 origin="lower",
             )
-            ax2[2].contourf(
+            ax2[4].contourf(
                 threshold_mask,
                 levels=[0.5, 1.5],
                 colors="none",
@@ -3952,19 +3975,6 @@ def run_once(
                 alpha=0.0,
                 origin="lower",
             )
-
-        # (4) GT
-        im3 = ax2[3].imshow(
-            final_gt,
-            cmap=gt_style["cmap"],
-            origin="lower",
-            vmin=gt_style["vmin"],
-            vmax=gt_style["vmax"]
-        )
-        ax2[3].set_title(gt_style["title"])
-        cb3 = plt.colorbar(im3, ax=ax2[3], fraction=0.046, pad=0.04)
-        if gt_style["colorbar_ticks"] is not None:
-            cb3.set_ticks(gt_style["colorbar_ticks"])
 
         fig2.subplots_adjust(bottom=0.23, wspace=0.35)
         fig2.savefig(save_path, dpi=200)
