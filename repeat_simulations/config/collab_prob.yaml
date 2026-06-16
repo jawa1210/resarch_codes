@@ -115,4 +115,4 @@ init:
 gp_prior_mean_mode: zero
 #gp_prior_mean_mode: threshold
 
-gp_prior_mean_value: 0.0
+gp_prior_mean_value: 0.5

@@ -7,8 +7,8 @@ import hashlib
 # =========================
 # 設定
 # =========================
-file_A = "nom_all_amb_not_collab_prob_init_change_nom_amb_seed1234_data_15runs.csv"
-file_B = "collab_all_amb_collab_prob_init_change_all_nom_amb_seed1234_data_15runs.csv"
+file_A = "not_collab_nom_amb_two_re_not_collab_prob_init_change_all_nom_amb_grid_30_seed1234_data_15runs.csv"
+file_B = "collab_amb_two_collab_prob_init_change_all_nom_amb_grid_seed1234_data_15runs.csv"
 
 name_A = "A"
 name_B = "B"
@@ -212,22 +212,15 @@ def make_run_summary(df):
     # =========================
     # stepごとの指標を作る
     # =========================
-    df["path_prob_sum_total_step"] = (
-        df["ugv0_path_prob_sum"] + df["ugv1_path_prob_sum"]
-    )
+    ugv_prob_cols = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_prob_sum")]
+    ugv_expected_cols = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_expected_sum")]
+    ugv_rmse_cols = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_rmse")]
+    ugv_var_cols = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_var")]
 
-    df["path_expected_sum_total_step"] = (
-        df["ugv0_path_expected_sum"] + df["ugv1_path_expected_sum"]
-    )
-
-    df["path_rmse_mean_step"] = (
-        df["ugv0_path_rmse"] + df["ugv1_path_rmse"]
-    ) / 2
-
-    df["path_var_mean_step"] = (
-        df["ugv0_path_var"] + df["ugv1_path_var"]
-    ) / 2
-
+    df["path_prob_sum_total_step"] = df[ugv_prob_cols].sum(axis=1) if ugv_prob_cols else np.nan
+    df["path_expected_sum_total_step"] = df[ugv_expected_cols].sum(axis=1) if ugv_expected_cols else np.nan
+    df["path_rmse_mean_step"] = df[ugv_rmse_cols].mean(axis=1) if ugv_rmse_cols else np.nan
+    df["path_var_mean_step"] = df[ugv_var_cols].mean(axis=1) if ugv_var_cols else np.nan
     # =========================
     # 時間平均・AUC
     # =========================
@@ -254,9 +247,8 @@ def make_run_summary(df):
     # =========================
     last = df.groupby("run_idx").tail(1).copy()
 
-    last["path_true_sum_total"] = (
-        last["ugv0_path_true_sum"] + last["ugv1_path_true_sum"]
-    )
+    ugv_true_cols = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_true_sum")]
+    last["path_true_sum_total"] = last[ugv_true_cols].sum(axis=1) if ugv_true_cols else np.nan
 
     last["final_true_crop_sum"] = last["true_crop_sum"]
 
@@ -371,6 +363,8 @@ for metric, direction in metrics.items():
 
 result_df = pd.DataFrame(results)
 
+
+
 print("\n" + "="*80)
 print("PAIRED STATISTICAL TEST RESULTS")
 print("="*80)
@@ -401,6 +395,147 @@ for _, row in result_df.iterrows():
     if not pd.isna(row['improvement_%']):
         print(f"改善率           : {row['improvement_%']:.2f}%")
 
+# =========================
+# Bが負けているrun 上位3つ
+# ＋ 各run内で負け幅が大きいstep 上位3つ
+# =========================
+
+def add_step_metrics(df):
+    df = df.sort_values(["run_idx", "step"]).copy()
+
+    prob_cols = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_prob_sum")]
+    exp_cols  = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_expected_sum")]
+    rmse_cols = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_rmse")]
+    var_cols  = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_var")]
+    true_cols = [c for c in df.columns if c.startswith("ugv") and c.endswith("_path_true_sum")]
+
+    df["path_prob_sum_total_step"] = df[prob_cols].sum(axis=1) if prob_cols else np.nan
+    df["path_expected_sum_total_step"] = df[exp_cols].sum(axis=1) if exp_cols else np.nan
+    df["path_rmse_mean_step"] = df[rmse_cols].mean(axis=1) if rmse_cols else np.nan
+    df["path_var_mean_step"] = df[var_cols].mean(axis=1) if var_cols else np.nan
+    df["path_true_sum_total_step"] = df[true_cols].sum(axis=1) if true_cols else np.nan
+    df["final_true_crop_sum_step"] = df["true_crop_sum"]
+    df["harvest_ratio_step"] = df["true_crop_sum"] / df["gt_sum"]
+
+    return df
+
+step_A = add_step_metrics(df_A)
+step_B = add_step_metrics(df_B)
+
+step_merged = pd.merge(
+    step_A,
+    step_B,
+    on=["run_idx", "step"],
+    suffixes=(f"_{name_A}", f"_{name_B}")
+)
+
+step_metric_map = {
+    "path_true_sum_total": "path_true_sum_total_step",
+    "final_true_crop_sum": "final_true_crop_sum_step",
+    "harvest_ratio": "harvest_ratio_step",
+
+    "path_prob_sum_total_mean": "path_prob_sum_total_step",
+    "path_prob_sum_total_auc": "path_prob_sum_total_step",
+
+    "path_expected_sum_total_mean": "path_expected_sum_total_step",
+    "path_expected_sum_total_auc": "path_expected_sum_total_step",
+
+    "path_rmse_mean_timeavg": "path_rmse_mean_step",
+    "path_rmse_mean_auc": "path_rmse_mean_step",
+
+    "path_var_mean_timeavg": "path_var_mean_step",
+    "path_var_mean_auc": "path_var_mean_step",
+}
+
+print("\n" + "="*80)
+print("Bが負けているrun 上位3つ ＋ 負け幅が大きいstep 上位3つ")
+print("="*80)
+
+for metric, direction in metrics.items():
+
+    if direction is None:
+        continue
+
+    col_A = f"{metric}_{name_A}"
+    col_B = f"{metric}_{name_B}"
+
+    if col_A not in merged.columns or col_B not in merged.columns:
+        continue
+
+    tmp = merged[["run_idx", col_A, col_B]].copy()
+    tmp["diff_B_minus_A"] = tmp[col_B] - tmp[col_A]
+
+    # Bの負け幅
+    # 大きいほど良い指標: A - B
+    # 小さいほど良い指標: B - A
+    if direction == +1:
+        tmp["B_loss_amount"] = tmp[col_A] - tmp[col_B]
+    elif direction == -1:
+        tmp["B_loss_amount"] = tmp[col_B] - tmp[col_A]
+
+    lose_runs = (
+        tmp[tmp["B_loss_amount"] > 0]
+        .sort_values("B_loss_amount", ascending=False)
+        .head(3)
+    )
+
+    print(f"\n■ {metric}")
+    print("-"*80)
+
+    if lose_runs.empty:
+        print("Bが負けているrunはありません。")
+        continue
+
+    for _, r in lose_runs.iterrows():
+        run_idx = int(r["run_idx"])
+
+        print(
+            f"\nrun_idx={run_idx} | "
+            f"A={r[col_A]:.6f}, B={r[col_B]:.6f}, "
+            f"B負け幅={r['B_loss_amount']:.6f}"
+        )
+
+        step_base = step_metric_map.get(metric)
+
+        if step_base is None:
+            print("  step別比較なし")
+            continue
+
+        sA = f"{step_base}_{name_A}"
+        sB = f"{step_base}_{name_B}"
+
+        if sA not in step_merged.columns or sB not in step_merged.columns:
+            print("  step別比較に必要な列がありません。")
+            continue
+
+        ss = step_merged[step_merged["run_idx"] == run_idx][
+            ["step", sA, sB]
+        ].copy()
+
+        ss["diff_B_minus_A"] = ss[sB] - ss[sA]
+
+        if direction == +1:
+            ss["B_loss_amount"] = ss[sA] - ss[sB]
+        elif direction == -1:
+            ss["B_loss_amount"] = ss[sB] - ss[sA]
+
+        top_steps = (
+            ss[ss["B_loss_amount"] > 0]
+            .sort_values("B_loss_amount", ascending=False)
+            .head(3)
+        )
+
+        print("  負け幅が大きいstep 上位3つ:")
+
+        if top_steps.empty:
+            print("    なし")
+        else:
+            for _, sr in top_steps.iterrows():
+                print(
+                    f"    step={int(sr['step'])} | "
+                    f"A={sr[sA]:.6f}, B={sr[sB]:.6f}, "
+                    f"B負け幅={sr['B_loss_amount']:.6f}"
+                )
 # 保存
 # result_df.to_csv("paired_test_result.csv", index=False)
 # print("\nSaved: paired_test_result.csv")

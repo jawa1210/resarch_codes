@@ -2522,6 +2522,15 @@ def run_once(
     ugv_fleet = UGVFleet(ugvs)
 
     uavs: list[UAVController] = []
+
+    shared_gp = SparseOnlineGP(
+        sigma0=gp_sensing_noise_sigma0,
+        kernel=lambda x, y, s=rbf_sigma: rbf_kernel(x, y, s),
+        max_basis=gp_max_basis,
+        delta=gp_threshold_delta,
+        prob_threshold=float(deep_get(params, "calibrator.threshold", 2.0)),
+        prior_mean=prior_mean,
+    )
     
     gp_prior_mean_mode = str(deep_get(params, "gp_prior_mean_mode", "zero"))
 
@@ -2542,7 +2551,7 @@ def run_once(
             grid_size=grid_size,
             ugv_fleet=ugv_fleet,
             cfg=cfg,
-            shared_gp=None,
+            shared_gp=shared_gp,
             uav_id=k,
             gp_sensing_noise_sigma0=gp_sensing_noise_sigma0,
             gp_max_basis=gp_max_basis,

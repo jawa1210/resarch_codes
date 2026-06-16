@@ -237,6 +237,7 @@ def plot_two_results_files(
         plot_threshold_count: bool = True,
         threshold: float | None = None,
         max_runs: int | None = None,
+        run_idxs: list[int] | None = None,
     ):
     """
     file2 を None にすると単独ファイルのプロットになる。
@@ -250,6 +251,10 @@ def plot_two_results_files(
     # ── CSV 読み込み ───────────────────────────
     df1_raw = pd.read_csv(file1)
     df1 = _sanitize_df(df1_raw, "file1")
+    # ★指定run_idxだけ表示
+    if run_idxs is not None:
+        df1 = df1[df1["run"].isin(run_idxs)].copy()
+        print(f"[INFO] file1 は run_idx={run_idxs} のみ使用")
     if max_runs is not None:
         keep_runs1 = sorted(df1["run"].unique())[:max_runs]
         df1 = df1[df1["run"].isin(keep_runs1)].copy()
@@ -289,6 +294,10 @@ def plot_two_results_files(
     if file2 is not None:
         df2_raw = pd.read_csv(file2)
         df2 = _sanitize_df(df2_raw, "file2")
+        # ★指定run_idxだけ表示
+        if run_idxs is not None:
+            df2 = df2[df2["run"].isin(run_idxs)].copy()
+            print(f"[INFO] file2 は run_idx={run_idxs} のみ使用")
         if max_runs is not None:
             keep_runs2 = sorted(df2["run"].unique())[:max_runs]
             df2 = df2[df2["run"].isin(keep_runs2)].copy()
@@ -904,8 +913,8 @@ if __name__ == "__main__":
     # )
 
     # ② 2条件比較（以前表示）
-    file_A = "nom_all_amb_not_collab_prob_init_change_nom_amb_seed1234_data_15runs.csv"
-    file_B = "collab_all_amb_collab_prob_init_change_all_nom_amb_seed1234_data_15runs.csv"
+    file_A = "not_collab_nom_amb_two_re_not_collab_prob_init_change_all_nom_amb_grid_30_seed1234_data_15runs.csv"
+    file_B = "collab_amb_two_collab_prob_init_change_all_nom_amb_grid_seed1234_data_15runs.csv"
     plot_two_results_files(
         file_A, file_B,
         label1="条件A",
@@ -917,5 +926,6 @@ if __name__ == "__main__":
         plot_sogp_case=True, # FalseにすればSOGP case plotをOFF
         plot_threshold_count=True,
         threshold=None, 
-        max_runs=15,  # None にすれば全runを使用
+        max_runs=None,  # None にすれば全runを使用
+        run_idxs=[1], 
         ) 
