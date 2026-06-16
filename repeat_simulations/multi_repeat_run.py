@@ -2522,7 +2522,15 @@ def run_once(
     ugv_fleet = UGVFleet(ugvs)
 
     uavs: list[UAVController] = []
+    
+    gp_prior_mean_mode = str(deep_get(params, "gp_prior_mean_mode", "zero"))
 
+    if gp_prior_mean_mode == "threshold":
+        prior_mean = float(deep_get(params, "calibrator.threshold", 0.7))
+    else:
+        prior_mean = float(deep_get(params, "gp_prior_mean_value", 0.0))
+
+    
     shared_gp = SparseOnlineGP(
         sigma0=gp_sensing_noise_sigma0,
         kernel=lambda x, y, s=rbf_sigma: rbf_kernel(x, y, s),
@@ -2531,13 +2539,6 @@ def run_once(
         prob_threshold=float(deep_get(params, "calibrator.threshold", 2.0)),
         prior_mean=prior_mean,
     )
-    
-    gp_prior_mean_mode = str(deep_get(params, "gp_prior_mean_mode", "zero"))
-
-    if gp_prior_mean_mode == "threshold":
-        prior_mean = float(deep_get(params, "calibrator.threshold", 0.7))
-    else:
-        prior_mean = float(deep_get(params, "gp_prior_mean_value", 0.0))
 
     for k in range(num_uavs):
         p0 = uav_init[k]

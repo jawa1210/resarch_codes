@@ -3,19 +3,20 @@ RUN_NAME: collab_amb
 AUTO_INCREMENT: true
 
 grid_size: 30
-noise_std: 0.1
-num_uavs: 3
+noise_std: 0.0
+num_uavs: 2
 num_ugvs: 2
-steps: 1800
+steps: 200
 
 ugv_depth: 7
 reward_type: 6
 ugv_amb_lambda: 5.0
 discount_factor: 0.95
 
-gp_sensing_noise_sigma0: 0.1
+gp_sensing_noise_sigma0: 1.0e-6
 gp_max_basis: 150
 gp_threshold_delta: 0.05
+
 rbf_sigma: 2.0
 
 cfg:
@@ -37,7 +38,7 @@ cfg:
 
   use_voronoi: true
 
-  use_common_map: false
+  use_common_map: true
   common_map_mode: direction
   #common_map_mode:point
   ugv_weight_eta: 0.3
@@ -57,7 +58,7 @@ cfg:
   v_limit: 5.0
   num_poly: 8
   control_period: 0.1
-  gp_update_period: 0.1
+  gp_update_period: 0.5
 
   cbf_j_alpha: 0.01
   cbf_j_gamma: 6.0
