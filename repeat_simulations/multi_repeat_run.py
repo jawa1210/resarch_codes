@@ -35,6 +35,7 @@ import matplotlib.patheffects as pe
 from matplotlib.colors import to_rgba
 import time
 from tqdm import tqdm
+from collections import deque
 
 
 from qpsolvers import solve_qp
@@ -1371,6 +1372,9 @@ class UAVController:
         self._nominal_hold_steps = 5   # ★ これが効く
         self._last_waypoint = None
         self._last_obs_points: Optional[np.ndarray] = None
+        self._last_obs_cell = None
+        self._recent_tgt_cells = deque(maxlen=20)
+        self._tgt_reject_radius = 1.0
 
 
         self.pos = train_data_x[0].copy().astype(float)
@@ -1855,6 +1859,10 @@ class UAVController:
 
     def _choose_waypoint(self, V_map):
         # ---- 1) ヒステリシス ----
+        if self._last_waypoint is not None:
+            if np.linalg.norm(self.pos - self._last_waypoint) < 0.5:
+                self._nominal_hold_counter = 0
+
         if self._nominal_hold_counter > 0 and self._last_waypoint is not None:
             self._nominal_hold_counter -= 1
             return self._last_waypoint
@@ -1929,12 +1937,33 @@ class UAVController:
                 A_eff=fused_amb,
                 depth=cfg.dir_num_steps
             )
+            if tgt is not None:
+                ty, tx = int(round(tgt[0])), int(round(tgt[1]))
 
-            if tgt is None:
-                return -cfg.k_pp * (self.pos - waypoint)
+                already_used = any(
+                    (ty - cy) ** 2 + (tx - cx) ** 2 <= self._tgt_reject_radius ** 2
+                    for cy, cx in self._recent_tgt_cells
+                )
 
-            self.current_chase_point = tgt.copy()
-            return -cfg.k_ugv * (self.pos - tgt)
+                if already_used:
+                    tgt = None
+
+            if tgt is not None:
+
+                # tgtに到達したら記録して今回は追わない
+                if np.linalg.norm(self.pos - tgt) < 1.0:
+                    ty = int(round(tgt[0]))
+                    tx = int(round(tgt[1]))
+                    self._recent_tgt_cells.append((ty, tx))
+
+                    self.current_chase_point = None
+
+                else:
+                    self.current_chase_point = tgt.copy()
+                    return -cfg.k_ugv * (self.pos - tgt)
+
+            # fallback
+            return -cfg.k_pp * (self.pos - waypoint)
 
         if cfg.nominal_mode == "to_ugv_future":
             cy, cx = self.ugv_fleet.target_cell_for_uav(self.pos, step_offset=cfg.step_of_ugv_path_used)
@@ -2100,9 +2129,11 @@ class UAVController:
             obs_list = env_fn(self.pos)  # 3×3（中心あり）の観測点9つ
             self._last_obs_points = np.vstack([p for p, _ in obs_list]) if len(obs_list) > 0 else None
 
-            # GP更新（obs_list を使い回す）
+            # GP更新（同じセルの連続重複観測をスキップ）
             for p_i, y_i in obs_list:
                 p_i = np.asarray(p_i, dtype=float)
+
+
                 delta_use = self._delta_for_observation(p_i)
                 self.gp.update(p_i, float(y_i), delta_override=delta_use)
 
