@@ -1,0 +1,103 @@
+# ============================================================================
+# 実験 B | 協調なし × 収穫価値確率 p(x)
+# ============================================================================
+# 目的 : UAV-UGV協調の有無と、UGV収穫報酬（GP平均/確率）の影響を比較する
+# 内容 : UAVは通常のウェイポイントを追従し、UGVはGP由来の確率を収穫報酬に使用
+# 共通 : 50×50セル / UAV 1台 / UGV 1台 / 1800ステップ / GP最大basis 90
+# 注意 : A～Dで同じmaster_seed、run_idx、環境設定を用いて比較する
+#        協調設定はUAVの目標選択・共通マップ利用の両方で切り替える
+#        このファイルはユーザー提供のB設定を基準に作成したもの
+#        既存のA/D実験と比較する場合は元のA/D YAMLとも照合すること
+# ============================================================================
+
+# --- 出力先と実験名 ----------------------------------------------------------
+RESULTS_DIR: results
+RUN_NAME: one_ablation_B
+AUTO_INCREMENT: true
+# --- シミュレーション規模 ----------------------------------------------------
+grid_size: 50
+noise_std: 0.1
+num_uavs: 1
+num_ugvs: 1
+steps: 1800
+# --- UGVの経路計画・報酬 ----------------------------------------------------
+ugv_depth: 7
+reward_type: 6
+ugv_amb_lambda: 5.0
+discount_factor: 0.95
+# --- GPの推定設定 ------------------------------------------------------------
+gp_sensing_noise_sigma0: 0.1
+gp_max_basis: 90
+gp_threshold_delta: 0.05
+rbf_sigma: 2.0
+# --- UAV/UGV協調・移動制御 --------------------------------------------------
+cfg:
+  use_cbf: true
+  waypoint_mode: miyashita
+  nominal_mode: to_waypoint  # 協調なし: 通常のウェイポイントを追う
+  nominal_hold_steps: 10
+  use_voronoi: true
+  use_common_map: false  # 協調なし: 共通マップを使用しない
+  common_map_mode: direction
+  ugv_weight_eta: 0.3
+  d0: 5.0
+  ugv_future_path_sigma: 5.0
+  step_of_ugv_path_used: 7
+  ring_d_star: 8.0
+  ring_sigma: 4.0
+  suenaga_rho: 0.95
+  suenaga_depth: 5
+  k_pp: 1.0
+  k_ugv: 1.0
+  v_limit: 5.0
+  num_poly: 8
+  control_period: 0.1
+  gp_update_period: 0.5
+  cbf_j_alpha: 0.01
+  cbf_j_gamma: 6.0
+  signal_mode: gp_logistic_prob  # UGV収穫報酬: GP由来の収穫価値確率 p(x)
+  uav_waypoint_signal: gp_var
+  map_publish_period: 0.5
+  dir_num_steps: 8
+  dir_ell_u: 6.0
+  dir_ell_perp: 3.0
+  dir_eta_forward: 2.0
+  dir_forward_shift: 0.0
+  dir_mode: sum
+  dir_normalize: true
+  wp_use_topk_centroid: false
+  wp_topk: 60
+  wp_min_dist: 2.0
+  wp_power: 1.0
+  ugv_move_period: 10
+# --- 収穫価値確率のキャリブレーション ------------------------------------------
+calibrator:
+  threshold: 0.7
+  init_w: 1.0
+  lr: 0.03
+  l2: 0.0001
+  min_samples: 20
+# --- 真値（収量分布）の生成条件 ----------------------------------------------
+ground_truth:
+  num_blobs: 100
+  amp_range:
+  - 1.0
+  - 3.0
+  sigma_range:
+  - 0.8
+  - 1.8
+  background: 0.02
+  noise_std: 0.02
+  max_value: 1.0
+  num_runs: 20
+# --- ロボットの初期位置 ------------------------------------------------------
+init_position_mode: random
+init:
+  margin: 3
+  spacing: 5
+# --- GP事前平均（zeroモードでは値を0として扱う実装に注意） -----------------------
+gp_prior_mean_mode: zero
+gp_prior_mean_value: 0.5
+# --- 軽量化（推定・制御アルゴリズムは変更しない） -------------------------------
+render_every: 10  # --visualize時、10ステップごとに画面更新
+csv_flush_every: 20  # 詳細CSVを20ステップごとにまとめて書き込む
