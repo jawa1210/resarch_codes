@@ -857,7 +857,7 @@ class UGVController:
         grid_size: int = 20,
         reward_type: int = 0,
         discount_factor: float = 0.95,
-        revisit_penalty: float = 0.3,
+        revisit_penalty: float = 0.0,
         amb_lambda: float = 5.0,
     ):
         self.grid_size = grid_size
@@ -2186,12 +2186,12 @@ class UAVController:
             self._I_prev = I_tilde
 
             vlim = float(cfg.v_limit)
-            if (xi_J2 + float(np.linalg.norm(xi_J1)) * vlim) < 0.0:
-                #print(f"[UAV{self.uav_id}] J-CBF skip: necessary condition fails "
-                #    f"(xi2 + ||xi1|| vlim < 0). "
-                #    f"||xi1||={np.linalg.norm(xi_J1):.3e} xi2={xi_J2:.3e} vlim={vlim:.3f} "
-                #    f"I_tilde={I_tilde:.3f} I0={self._I0:.3f}")
-                enable_J_cbf = False
+            # if (xi_J2 + float(np.linalg.norm(xi_J1)) * vlim) < 0.0:
+            #     #print(f"[UAV{self.uav_id}] J-CBF skip: necessary condition fails "
+            #     #    f"(xi2 + ||xi1|| vlim < 0). "
+            #     #    f"||xi1||={np.linalg.norm(xi_J1):.3e} xi2={xi_J2:.3e} vlim={vlim:.3f} "
+            #     #    f"I_tilde={I_tilde:.3f} I0={self._I0:.3f}")
+            #     enable_J_cbf = False
 
         # (3) waypoint を作る
         if enable_J_cbf:
